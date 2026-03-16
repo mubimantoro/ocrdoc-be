@@ -9,7 +9,7 @@ export const getPdfPageCount = async (filePath) => {
 };
 
 // Split PDF — ambil halaman startPage..endPage (1-based) → file baru
-export const SplitPdf = async (srcPath, startPage, endPage, outputDir) => {
+export const splitPdf = async (srcPath, startPage, endPage, outputDir) => {
   const pdfBytes = await readFile(srcPath);
   const srcDoc = await PDFDocument.load(pdfBytes);
   const newDoc = await PDFDocument.create();

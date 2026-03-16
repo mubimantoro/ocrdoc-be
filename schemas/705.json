@@ -1,0 +1,22 @@
+{
+  "doc_code": "705",
+  "doc_name": "Bill of Lading",
+  "fields": [
+    "shipper_name", "shipper_address", "shipper_phone", "shipper_country", "shipper_country_code", "shipper_tax_id",
+    "consignee_name", "consignee_address", "consignee_tax_id",
+    "on_behalf_of_name", "on_behalf_of_address", "on_behalf_of_tax_id",
+    "notify_party_name", "notify_party_tax_id", "notify_party_address",
+    "vessel_name", "voyage_no",
+    "port_of_discharge", "place_of_receipt", "port_of_loading",
+    "movement_type", "date_of_loading", "date_of_issue", "date_of_sailing",
+    "bill_loading_no",
+    "weight", "uow", "uom", "measurement"
+  ],
+  "packaging": ["qty", "packaging_unit", "brand"],
+  "containers": [
+    "container_code", "container_size", "seal_code",
+    "container_type_code", "container_type",
+    "container_category_code", "container_category"
+  ],
+  "items": ["product_name", "hs_code", "ctn_no", "c_o"]
+}

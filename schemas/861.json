@@ -1,0 +1,10 @@
+{
+  "doc_code": "861",
+  "doc_name": "COO",
+  "fields": ["doc_date", "doc_no", "fta"],
+  "packages": [
+    "item_number", "number_package", "type_package", "prod_number",
+    "description", "hs_code", "origin_criteria",
+    "gross_weight", "unit_value", "date_of_invoice"
+  ]
+}

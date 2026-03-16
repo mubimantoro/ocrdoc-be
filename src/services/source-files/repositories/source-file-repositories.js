@@ -7,13 +7,14 @@ class SourceFileRepositories {
     return {
       id: row.id,
       file_name:row.file_name,
+      file_path: row.file_path,
       mime_type: row.mime_type,
       page_count: row.page_count,
       status: row.status,
       progress: row.progress,
       error_message: row.error_message,
       created_at: row.created_at,
-      pdated_at: row.updated_at,
+      updated_at: row.updated_at,
       uploaded_by: row.uploader_id ? {
         id: row.uploader_id, name: row.uploader_name,
         email: row.uploader_email, role: row.uploader_role,
@@ -23,12 +24,16 @@ class SourceFileRepositories {
 
   #baseQuery() {
     return `SELECT sf.id, sf.file_name, sf.mime_type, sf.page_count,
-    sf.status, sf.progress, sf.error_message,
-    sf.created_at, sf.updated_at,
-    u.id AS uploader_id, u.name AS uploader_name,
-    u.email AS uploader_email, u.role AS uploader_role
-    FROM source_files sf
-    LEFT JOIN users u ON u.id = sf.uploaded_by`;
+  sf.status, sf.progress, sf.error_message, sf.file_path,
+  sf.created_at, sf.updated_at,
+  u.id AS uploader_id,
+  u.name  AS uploader_name,
+  u.email AS uploader_email,
+  r.name  AS uploader_role
+  FROM source_files sf
+  LEFT JOIN users u ON u.id  = sf.uploaded_by
+  LEFT JOIN user_roles ur ON ur.user_id = u.id
+  LEFT JOIN roles r ON r.id  = ur.role_id`;
   }
 
   async findAll({ page = 1, limit = 10, status = null } = {}) {

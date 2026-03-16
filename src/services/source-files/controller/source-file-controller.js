@@ -33,7 +33,7 @@ export const getAll = async (req, res, next) => {
   try {
     const page   = parseInt(req.query.page)  || 1;
     const limit  = parseInt(req.query.limit) || 10;
-    const status = req.query.status          || null;
+    const status = req.query.status || null;
     const validStatuses = ['uploaded', 'processing', 'completed', 'failed', 'pending_review'];
     if (status && !validStatuses.includes(status))
       return next(new InvariantError(`Status tidak valid. Pilihan: ${validStatuses.join(', ')}`));

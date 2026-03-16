@@ -1,0 +1,33 @@
+{
+  "doc_code": "001",
+  "doc_name": "CIPL",
+  "fields": [
+    "packing_list_number", "packing_list_date",
+    "seller_name", "seller_address", "seller_country", "seller_country_code", "seller_phone",
+    "buyer_name", "buyer_address", "buyer_country", "buyer_country_code", "buyer_phone", "buyer_tax",
+    "ship_to", "ship_to_city",
+    "shipment_date",
+    "payment_terms", "payment_terms_code", "inco_terms", "freight_terms",
+    "origin", "ultimate_dest",
+    "total", "currency_code",
+    "packaging_total", "packaging_type"
+  ],
+  "invoice_list": {
+    "description": "Array of invoices",
+    "fields": ["invoice_number", "invoice_date"],
+    "items": [
+      "number", "prod_number", "description", "quantity", "hs_code",
+      "uom", "origin", "origin_code", "vendor_name", "vendor_number",
+      "unit_price", "amount", "currency", "packaging_type_item"
+    ]
+  },
+  "pl_list": {
+    "description": "Array of packing list entries",
+    "fields": ["invoice_number", "invoice_date"],
+    "items": [
+      "number", "description", "quantity", "quantity_unit", "origin", "brand",
+      "net_weight", "gross_weight", "amount", "unit_price",
+      "measurement", "packaging_qty", "packaging_unit"
+    ]
+  }
+}

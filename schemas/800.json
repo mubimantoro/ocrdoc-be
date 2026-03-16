@@ -1,0 +1,5 @@
+{
+  "doc_code": "800",
+  "doc_name": "POSTEL",
+  "fields": ["doc_date", "doc_number"]
+}

@@ -28,3 +28,5 @@ router.post('/', authenticationToken, upload_mw.single('file'), upload);
 router.get('/', authenticationToken, getFiles);
 router.get('/:id', authenticationToken, getFileById);
 router.post('/:id/retry', authenticationToken, retryFile);
+
+export default router;
