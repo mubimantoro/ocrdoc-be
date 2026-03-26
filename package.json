@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start:dev": "nodemon src/server.js",
+    "start:prod": "node src/server.js",
     "lint": "eslint ./",
     "worker": "node src/worker/document-worker.js",
     "webhook": "node src/worker/webhook-worker.js"
