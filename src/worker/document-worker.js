@@ -5,6 +5,8 @@ import pool from '../config/database.js';
 import { getPdfPageCount, splitPdf } from '../utils/pdf-helper.js';
 import detectBoundaries from './steps/phase-1-boundary-detection.js';
 import extractDocument from './steps/phase-2-extraction.js';
+import { webhookQueue } from '../config/queue.js';
+import { pushEvent } from '../sse/index.js';
 
 const CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY || '3');
 const UPLOAD_DIR  = process.env.UPLOAD_DIR || './uploads/temp';
@@ -14,12 +16,40 @@ const connection = {
   port: parseInt(process.env.REDIS_PORT) || 6379,
 };
 
-// ── Helpers DB ─────────────────────────────────────────────────────────────
-const updateSourceFile = (id, status, progress, errorMessage = null) =>
-  pool.query(
+const updateSourceFile = async (id, status, progress, errorMessage = null) => {
+  await pool.query(
     'UPDATE source_files SET status=$1, progress=$2, error_message=$3 WHERE id=$4',
     [status, progress, errorMessage, id]
   );
+
+  // Push ke semua client yang sedang subscribe
+  pushEvent(id, 'status_update', {
+    source_file_id: id,
+    status,
+    progress,
+    error_message:  errorMessage,
+  });
+
+  // Push event khusus untuk status terminal
+  if (status === 'completed') {
+    pushEvent(id, 'completed', {
+      source_file_id: id,
+      message: 'Semua dokumen berhasil diproses',
+    });
+  }
+  if (status === 'failed') {
+    pushEvent(id, 'failed', {
+      source_file_id: id,
+      message: errorMessage || 'Pemrosesan gagal',
+    });
+  }
+  if (status === 'pending_review') {
+    pushEvent(id, 'pending_review', {
+      source_file_id: id,
+      message: 'Confidence rendah, perlu review manual',
+    });
+  }
+};
 
 const updateJob = (id, status, progress, errorMessage = null) =>
   pool.query(
@@ -101,8 +131,8 @@ const worker = new Worker(
         const { doc_code, vendor, start_page, end_page, confidence, needs_review } = boundary;
 
         const docFilePath = await splitPdf(filePath, start_page, end_page, UPLOAD_DIR);
-        const vendorId    = await findOrCreateVendor(vendor);
-        const docType     = await getDocumentType(doc_code);
+        const vendorId = await findOrCreateVendor(vendor);
+        const docType = await getDocumentType(doc_code);
 
         const { rows: docRows } = await pool.query(
           `INSERT INTO documents
@@ -159,7 +189,7 @@ const worker = new Worker(
 
             const { rows: resultRows } = await client.query(
               'INSERT INTO extraction_results (extraction_job_id) VALUES ($1) RETURNING id',
-              [job_id]
+              [job_id,]
             );
             const resultId = resultRows[0].id;
 
@@ -200,6 +230,38 @@ const worker = new Worker(
       }
 
       await updateSourceFile(sourceFileId, 'completed', 100);
+
+      const webhookUrl = process.env.WEBHOOK_URL;
+      if (webhookUrl) {
+        const { rows: docs } = await pool.query(
+          `SELECT d.id, d.start_page, d.end_page, d.status, dt.code AS doc_code, dt.name AS doc_name,
+          v.name AS vendor_name
+          FROM documents d
+          LEFT JOIN document_types dt ON dt.id = d.document_type_id
+          LEFT JOIN vendors v ON v.id  = d.vendor_id
+          WHERE d.source_file_id = $1`,
+          [sourceFileId]
+        );
+
+        const { rows: deliveryRows } = await pool.query(
+          'INSERT INTO webhook_deliveries (source_file_id, url, status) VALUES ($1, $2, \'pending\') RETURNING id',
+          [sourceFileId, webhookUrl]
+        );
+
+        await webhookQueue.add('deliver-webhook', {
+          deliveryId: deliveryRows[0].id,
+          url: webhookUrl,
+          payload: {
+            event: 'source_file.completed',
+            source_file_id: sourceFileId,
+            documents: docs,
+            processed_at: new Date().toISOString(),
+          },
+        });
+
+        console.info(`[Worker] Webhook enqueued for sourceFileId: ${sourceFileId}`);
+      }
+
       await job.updateProgress(100);
       console.info(`[Worker] Job ${job.id} completed`);
 

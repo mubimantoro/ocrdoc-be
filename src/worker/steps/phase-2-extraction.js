@@ -29,7 +29,7 @@ const loadSchema = async (schemaPath) => {
 const extractDocument = async (docFilePath, schemaPath, docCode) => {
   console.info(`[Phase2] Extracting: ${docFilePath} (type: ${docCode})`);
 
-  const schema    = await loadSchema(schemaPath);
+  const schema = await loadSchema(schemaPath);
   const pdfBuffer = await readFile(docFilePath);
   const base64Pdf = pdfBuffer.toString('base64');
 

@@ -1,48 +1,65 @@
+import 'dotenv/config';
 import axios from 'axios';
 import pool from '../config/database.js';
-import { webhookQueue } from '../config/queue.js';
+import { Worker } from 'bullmq';
 
-webhookQueue.process(5, async (job) => {
-  const { deliveryId, url, payload } = job.data;
-  console.info(`[Webhook] Delivering to: ${url}`);
+const connection = {
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT) || 6379,
+};
 
-  // Update attempt count
-  await pool.query(
-    'UPDATE webhook_deliveries SET attempt = attempt + 1 WHERE id = $1',
-    [deliveryId]
-  );
+const worker = new Worker(
+  'webhook',
 
-  try {
-    const response = await axios.post(url, payload, {
-      timeout: 10000,
-      headers: { 'Content-Type': 'application/json' },
-    });
+  async (job) => {
+    const { deliveryId, url, payload } = job.data;
+    console.info(`[Webhook] Delivering to: ${url}`);
 
     await pool.query(
-      `UPDATE webhook_deliveries
-       SET status='success', response_code=$1, delivered_at=NOW()
-       WHERE id=$2`,
-      [response.status, deliveryId]
+      'UPDATE webhook_deliveries SET attempt = attempt + 1 WHERE id = $1',
+      [deliveryId]
     );
 
-    console.info(`[Webhook] Delivered successfully (${response.status})`);
-  } catch (err) {
-    const responseCode = err.response?.status || null;
+    try {
+      const response = await axios.post(url, payload, {
+        timeout: 10000,
+        headers: { 'Content-Type': 'application/json' },
+      });
 
-    await pool.query(
-      `UPDATE webhook_deliveries
-       SET status='failed', response_code=$1, error_message=$2
-       WHERE id=$3`,
-      [responseCode, err.message, deliveryId]
-    );
+      await pool.query(
+        `UPDATE webhook_deliveries
+         SET status='success', response_code=$1, delivered_at=NOW()
+         WHERE id=$2`,
+        [response.status, deliveryId]
+      );
 
-    console.error(`[Webhook] Delivery failed: ${err.message}`);
-    throw err; // Bull akan retry otomatis
+      console.info(`[Webhook] Delivered successfully (${response.status})`);
+    } catch (err) {
+      const responseCode = err.response?.status || null;
+
+      await pool.query(
+        `UPDATE webhook_deliveries
+         SET status='failed', response_code=$1, error_message=$2
+         WHERE id=$3`,
+        [responseCode, err.message, deliveryId]
+      );
+
+      console.error(`[Webhook] Delivery failed: ${err.message}`);
+      throw err; // BullMQ retry otomatis
+    }
+  },
+
+  {
+    connection,
+    concurrency: 5,
   }
-});
+);
 
-webhookQueue.on('failed', (job, err) =>
-  console.error(`Webhook job ${job.id} failed (attempt ${job.attemptsMade}): ${err.message}`)
+worker.on('failed', (job, err) =>
+  console.error(`Webhook job ${job?.id} failed (attempt ${job?.attemptsMade}): ${err.message}`)
+);
+worker.on('error', (err) =>
+  console.error(`Webhook worker error: ${err.message}`)
 );
 
 console.info('Webhook worker started');

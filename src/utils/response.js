@@ -1,13 +1,14 @@
 const response = (res, statusCode, message, data) => {
-  return res
-    .status(statusCode)
-    .json({
-      code: statusCode,
-      status: statusCode < 400 ?  'success' : 'failed',
+  const body = {
+    meta: {
+      success: statusCode < 400,
       message,
-      data
-    })
-    .end();
+    },
+  };
+
+  if (data !== undefined) body.data = data;
+
+  return res.status(statusCode).json(body);
 };
 
 export default response;
