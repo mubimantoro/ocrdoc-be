@@ -1,7 +1,10 @@
 import path from 'path';
 import { readFile } from 'fs/promises';
-import pdfParser from 'pdf-parser';
 import getProvider from '../../config/ai-provider';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdfParse  = require('pdf-parse');
+
 
 const loadSchema = async (schemaPath) => {
   try {
@@ -41,7 +44,7 @@ const extractDocument = async (docFilePath, schemaPath, docCode) => {
 
   let extractedText = '';
   try {
-    const pdfData = await pdfParser(pdfBuffer);
+    const pdfData = await pdfParse(pdfBuffer);
     extractedText = pdfData.text?.trim() || '';
   } catch { extractedText = ''; }
 

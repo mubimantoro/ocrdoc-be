@@ -78,30 +78,29 @@ class DocumentRepositories {
           [resultId]
         );
 
-        const { rows: itemRows } = await pool.query(
-          `SELECT id, row_index FROM items
-           WHERE extraction_result_id = $1
-           ORDER BY row_index`,
+        const { rows: itemData } = await pool.query(
+          `SELECT i.id AS item_id, i.row_index, itf.key, itf.value 
+           FROM items i
+           LEFT JOIN item_fields itf ON itf.item_id = i.id
+           WHERE i.extraction_result_id = $1
+           ORDER BY i.row_index`,
           [resultId]
         );
 
-        const items = [];
-        for (const item of itemRows) {
-          const { rows: colRows } = await pool.query(
-            'SELECT key, value FROM item_fields WHERE item_id = $1',
-            [item.id]
-          );
+        const itemsMap = new Map();
 
-          const itemObj = { row_index: item.row_index };
-          for (const col of colRows) {
-            itemObj[col.key] = col.value;
+        for (const row of itemData) {
+          if (!itemsMap.has(row.item_id)) {
+            itemsMap.set(row.item_id, { row_index: row.row_index });
           }
 
-          items.push(itemObj);
+          if (row.key) {
+            itemsMap.get(row.item_id)[row.key] = row.value;
+          }
         }
 
         doc.fields = fields;
-        doc.items  = items;
+        doc.items  = Array.from(itemsMap.values());
       }
     }
 

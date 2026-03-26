@@ -1,7 +1,9 @@
 /* eslint-disable camelcase */
 import { readFile } from 'fs/promises';
-import pdfParser from 'pdf-parser';
-import getProvider from '../../config/ai-provider';
+import getProvider from '../../config/ai-provider.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdfParse  = require('pdf-parase');
 
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD || '0.7');
 
@@ -47,7 +49,7 @@ const detectBoundaries = async (filePath) => {
   console.info(`[Phase1] Pre-parsing PDF: ${filePath}`);
 
   const pdfBuffer = await readFile(filePath);
-  const pdfData   = await pdfParser(pdfBuffer);
+  const pdfData   = await pdfParse(pdfBuffer);
   const pageCount = pdfData.numpages;
   const pages     = splitPages(pdfData.text, pageCount);
   const parsed    = pages.map((text, i) => parsePage(text, i + 1));
