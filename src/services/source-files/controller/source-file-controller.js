@@ -1,5 +1,7 @@
+/* eslint-disable camelcase */
 import { extractionQueue } from '../../../config/queue.js';
 import { InvariantError } from '../../../exceptions/index.js';
+import { addClient, removeClient } from '../../../sse/index.js';
 import { getPdfPageCount } from '../../../utils/pdf-helper.js';
 import response from '../../../utils/response.js';
 import SourceFileRepositories from '../repositories/source-file-repositories.js';
@@ -66,4 +68,36 @@ export const retry = async (req, res, next) => {
     const updated = await SourceFileRepositories.findById(req.params.id);
     return response(res, 200, 'Retry berhasil dimasukkan ke antrian', updated);
   } catch (err) { next(err); }
+};
+
+export const stream = async (req, res) => {
+  const { id } = req.params;
+  try {
+    await SourceFileRepositories.findById(id);
+  } catch {
+    return res.status(404).json({ meta: { success: false, message: 'Source file tidak ditemukan' } });
+  }
+
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const sourceFile = await SourceFileRepositories.findById(id);
+  res.write(`event: connected\ndata: ${JSON.stringify({
+    source_file_id: id,
+    status: sourceFile.status,
+    progress: sourceFile.progress,
+  })}\n\n`);
+
+  addClient(id, res);
+
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 30000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    removeClient(id, res);
+  });
 };

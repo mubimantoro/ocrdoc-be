@@ -4,7 +4,7 @@ import multer from 'multer';
 import { nanoid } from 'nanoid';
 import path from 'path';
 import authenticationToken from '../../../middlewares/auth.js';
-import { getById as getFileById, getAll as getFiles, retry as retryFile, upload } from '../controller/source-file-controller.js';
+import { getById as getFileById, getAll as getFiles, retry as retryFile, stream, upload } from '../controller/source-file-controller.js';
 
 
 const router = Router();
@@ -28,5 +28,6 @@ router.post('/', authenticationToken, upload_mw.single('file'), upload);
 router.get('/', authenticationToken, getFiles);
 router.get('/:id', authenticationToken, getFileById);
 router.post('/:id/retry', authenticationToken, retryFile);
+router.get('/:id/stream', authenticationToken, stream);
 
 export default router;
