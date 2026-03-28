@@ -72,24 +72,26 @@ export const retry = async (req, res, next) => {
 
 export const stream = async (req, res) => {
   const { id } = req.params;
+
   try {
     await SourceFileRepositories.findById(id);
   } catch {
-    return res.status(404).json({ meta: { success: false, message: 'Source file tidak ditemukan' } });
+    return res.status(404).json({
+      meta: { success: false, message: 'Source file tidak ditemukan' },
+    });
   }
 
-  // SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Content-Type',      'text/event-stream');
+  res.setHeader('Cache-Control',     'no-cache');
+  res.setHeader('Connection',        'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
   const sourceFile = await SourceFileRepositories.findById(id);
   res.write(`event: connected\ndata: ${JSON.stringify({
     source_file_id: id,
-    status: sourceFile.status,
-    progress: sourceFile.progress,
+    status:         sourceFile.status,
+    progress:       sourceFile.progress,
   })}\n\n`);
 
   addClient(id, res);

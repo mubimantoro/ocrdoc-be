@@ -9,6 +9,14 @@ import { getById as getFileById, getAll as getFiles, retry as retryFile, stream,
 
 const router = Router();
 
+const authenticateSSE = (req, res, next) => {
+  if (req.query.token) {
+    req.headers['authorization'] = `Bearer ${req.query.token}`;
+  }
+  return authenticationToken(req, res, next);
+};
+
+
 const storage = multer.diskStorage({
   destination: process.env.UPLOAD_DIR || './uploads/temp',
   filename: (req, file, cb) => cb(null, `${nanoid()}${path.extname(file.originalname)}`),
@@ -28,6 +36,6 @@ router.post('/', authenticationToken, upload_mw.single('file'), upload);
 router.get('/', authenticationToken, getFiles);
 router.get('/:id', authenticationToken, getFileById);
 router.post('/:id/retry', authenticationToken, retryFile);
-router.get('/:id/stream', authenticationToken, stream);
+router.get('/:id/stream', authenticateSSE, stream);
 
 export default router;
