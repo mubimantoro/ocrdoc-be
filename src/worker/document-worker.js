@@ -7,6 +7,7 @@ import detectBoundaries from './steps/phase-1-boundary-detection.js';
 import extractDocument from './steps/phase-2-extraction.js';
 import { webhookQueue } from '../config/queue.js';
 import { pushEvent } from '../sse/index.js';
+import { SMART_MODEL } from '../config/gemini.js';
 
 const CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY || '3');
 const UPLOAD_DIR  = process.env.UPLOAD_DIR || './uploads/temp';
@@ -52,11 +53,24 @@ const updateSourceFile = async (id, status, progress, errorMessage = null) => {
   }
 };
 
-const updateJob = (id, status, progress, errorMessage = null) =>
-  pool.query(
+const updateJob = (id, status, progress, errorMessage = null) => {
+  if (status === 'processing') {
+    return pool.query(
+      'UPDATE extraction_jobs SET status=$1, progress=$2, error_message=$3, started_at=now() WHERE id=$4',
+      [status, progress, errorMessage, id]
+    );
+  }
+  if (status === 'completed' || status === 'failed') {
+    return pool.query(
+      'UPDATE extraction_jobs SET status=$1, progress=$2, error_message=$3, completed_at=now() WHERE id=$4',
+      [status, progress, errorMessage, id]
+    );
+  }
+  return pool.query(
     'UPDATE extraction_jobs SET status=$1, progress=$2, error_message=$3 WHERE id=$4',
     [status, progress, errorMessage, id]
   );
+};
 
 const findOrCreateVendor = async (name) => {
   if (!name) return null;
@@ -101,6 +115,32 @@ const saveItems = async (client, resultId, items) => {
   }
 };
 
+const groupBoundaries = (boundaries) => {
+  const groupMap = new Map();
+
+  for (const boundary of boundaries) {
+    // Key: kombinasi doc_code + vendor + invoice_number
+    // Kalau invoice_number null, pakai start_page sebagai unique key
+    const key = boundary.invoice_number
+      ? `${boundary.doc_code}|${boundary.vendor ?? ''}|${boundary.invoice_number}`
+      : `${boundary.doc_code}|${boundary.vendor ?? ''}|page_${boundary.start_page}`;
+
+    if (!groupMap.has(key)) {
+      groupMap.set(key, { ...boundary });
+    } else {
+      const existing = groupMap.get(key);
+      // Expand page range
+      existing.start_page = Math.min(existing.start_page, boundary.start_page);
+      existing.end_page   = Math.max(existing.end_page,   boundary.end_page);
+      // Ambil confidence terendah — lebih konservatif
+      existing.confidence = Math.min(existing.confidence, boundary.confidence);
+    }
+  }
+
+  // Sort berdasarkan start_page
+  return [...groupMap.values()].sort((a, b) => a.start_page - b.start_page);
+};
+
 // ── Worker ─────────────────────────────────────────────────────────────────
 const worker = new Worker(
   'extraction',
@@ -123,6 +163,9 @@ const worker = new Worker(
         end_page: Math.min(b.end_page, totalPages),
       }));
 
+      const groupedBoundaries = groupBoundaries(normalized);
+      console.info(`[Worker] Boundaries: ${normalized.length} → grouped: ${groupedBoundaries.length}`);
+
       await job.updateProgress(30);
 
       // ── Split PDF + Buat Document records ─────────────────────────────
@@ -137,12 +180,13 @@ const worker = new Worker(
 
         const { rows: docRows } = await pool.query(
           `INSERT INTO documents
-             (source_file_id, vendor_id, document_type_id, file_path,
-              start_page, end_page, confidence, needs_review, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+     (source_file_id, vendor_id, document_type_id, file_path,
+      start_page, end_page, confidence, needs_review, status, invoice_number)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
           [sourceFileId, vendorId, docType.id, docFilePath,
             start_page, end_page, confidence, needs_review,
-            needs_review ? 'pending_review' : 'queued']
+            needs_review ? 'pending_review' : 'queued',
+            boundary.invoice_number ?? null]
         );
         const documentId = docRows[0].id;
 
@@ -178,7 +222,7 @@ const worker = new Worker(
         await updateJob(job_id, 'processing', 0);
 
         try {
-          const { fields, items, parseError } = await extractDocument(
+          const { fields, items, parseError, usage, pricing } = await extractDocument(
             file_path,
             schema_path || 'schemas/999.json',
             doc_code || '999'
@@ -189,8 +233,25 @@ const worker = new Worker(
             await client.query('BEGIN');
 
             const { rows: resultRows } = await client.query(
-              'INSERT INTO extraction_results (extraction_job_id) VALUES ($1) RETURNING id',
-              [job_id,]
+              `INSERT INTO extraction_results
+              (extraction_job_id, ai_model,
+              prompt_tokens, output_tokens, total_tokens,
+              input_price, output_price, total_price,
+              total_pages, duration_ms)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+              RETURNING id`,
+              [
+                job_id,
+                SMART_MODEL,
+                usage?.prompt_tokens  ?? 0,
+                usage?.output_tokens  ?? 0,
+                usage?.total_tokens   ?? 0,
+                pricing?.input_price  ?? 0,
+                pricing?.output_price ?? 0,
+                pricing?.total_price  ?? 0,
+                usage?.total_pages    ?? 1,
+                usage?.wall_clock_ms  ?? 0,
+              ]
             );
             const resultId = resultRows[0].id;
 
@@ -199,7 +260,9 @@ const worker = new Worker(
 
             const status = parseError ? 'failed' : 'completed';
             await client.query(
-              'UPDATE extraction_jobs SET status=$1, progress=100 WHERE id=$2',
+              `UPDATE extraction_jobs
+   SET status=$1, progress=100, completed_at=now()
+   WHERE id=$2`,
               [status, job_id]
             );
             await client.query(

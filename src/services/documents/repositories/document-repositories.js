@@ -48,7 +48,8 @@ class DocumentRepositories {
       dt.id AS dt_id, dt.code AS dt_code, dt.name AS dt_name,
       v.id  AS vendor_id, v.name AS vendor_name,
       sf.id AS sf_id, sf.file_name AS sf_file_name,
-      ej.id AS job_id
+      ej.id AS job_id,
+      ej.started_at, ej.completed_at 
       FROM documents d
       LEFT JOIN document_types dt  ON dt.id = d.document_type_id
       LEFT JOIN vendors v ON v.id  = d.vendor_id
@@ -64,13 +65,16 @@ class DocumentRepositories {
 
     if (rows[0].job_id) {
       const { rows: resultRows } = await pool.query(
-        `SELECT er.id FROM extraction_results er
-         WHERE er.extraction_job_id = $1
-         ORDER BY er.created_at DESC LIMIT 1`,
+        `SELECT er.id, er.ai_model, er.prompt_tokens, er.output_tokens, er.total_tokens, er.input_price, er.output_price, er.total_price,
+        er.total_pages, er.duration_ms
+        FROM extraction_results er
+        WHERE er.extraction_job_id = $1
+        ORDER BY er.created_at DESC LIMIT 1`,
         [rows[0].job_id]
       );
 
       if (resultRows.length) {
+        const result = resultRows[0];
         const resultId = resultRows[0].id;
 
         const { rows: fields } = await pool.query(
@@ -101,6 +105,20 @@ class DocumentRepositories {
 
         doc.fields = fields;
         doc.items  = Array.from(itemsMap.values());
+        doc.ai_usage = {
+          model:         result.ai_model,
+          prompt_tokens: result.prompt_tokens,
+          output_tokens: result.output_tokens,
+          total_tokens:  result.total_tokens,
+          input_price:   result.input_price,
+          output_price:  result.output_price,
+          total_price:   result.total_price,
+          total_pages:   result.total_pages,
+          duration_ms:   result.duration_ms,
+          duration_sec:  result.duration_ms
+            ? parseFloat((result.duration_ms / 1000).toFixed(2))
+            : null,
+        };
       }
     }
 
@@ -108,6 +126,10 @@ class DocumentRepositories {
   }
 
   #mapRow(row) {
+    const durationMs = row.started_at && row.completed_at
+      ? new Date(row.completed_at) - new Date(row.started_at)
+      : null;
+
     return {
       id: row.id,
       start_page: row.start_page,
@@ -119,6 +141,12 @@ class DocumentRepositories {
       created_at: row.created_at,
       updated_at: row.updated_at,
       job_id: row.job_id,
+      processing_time: durationMs !== null ? {
+        started_at:   row.started_at,
+        completed_at: row.completed_at,
+        duration_ms:  durationMs,
+        duration_sec: parseFloat((durationMs / 1000).toFixed(2)),
+      } : null,
       document_type: row.dt_id
         ? { id: row.dt_id, code: row.dt_code, name: row.dt_name }
         : null,

@@ -81,17 +81,20 @@ export const stream = async (req, res) => {
     });
   }
 
-  res.setHeader('Content-Type',      'text/event-stream');
-  res.setHeader('Cache-Control',     'no-cache');
-  res.setHeader('Connection',        'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin',  process.env.CORS_ORIGIN);
+  res.setHeader('Access-Control-Allow-Credentials',  'true');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
   const sourceFile = await SourceFileRepositories.findById(id);
   res.write(`event: connected\ndata: ${JSON.stringify({
     source_file_id: id,
-    status:         sourceFile.status,
-    progress:       sourceFile.progress,
+    status: sourceFile.status,
+    progress: sourceFile.progress,
   })}\n\n`);
 
   addClient(id, res);
