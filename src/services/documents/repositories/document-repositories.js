@@ -29,7 +29,7 @@ class DocumentRepositories {
       LEFT JOIN source_files sf ON sf.id = d.source_file_id
       LEFT JOIN extraction_jobs ej ON ej.document_id = d.id
       ${where}
-      ORDER BY d.created_at DESC
+      ORDER BY d.start_page ASC
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
