@@ -1,3 +1,4 @@
+
 /* eslint-disable camelcase */
 import 'dotenv/config';
 import { Worker } from 'bullmq';
@@ -6,11 +7,14 @@ import { getPdfPageCount, splitPdf } from '../utils/pdf-helper.js';
 import detectBoundaries from './steps/phase-1-boundary-detection.js';
 import extractDocument from './steps/phase-2-extraction.js';
 import { webhookQueue } from '../config/queue.js';
-import { pushEvent } from '../sse/index.js';
-import { SMART_MODEL } from '../config/gemini.js';
+import { emitCompleted, emitFailed, emitPendingReview, emitStatusUpdate } from '../utils/worker-emitter.js';
+import { transformToRaw } from '../utils/raw-transformer.js';
+import { FLAGSHIP_MODEL } from '../config/gemini.js';
+import { calculatePrice } from '../utils/token-pricing.js';
 
 const CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY || '3');
 const UPLOAD_DIR  = process.env.UPLOAD_DIR || './uploads/temp';
+const DOC_CONCURRENCY = parseInt(process.env.QUEUE_DOC_CONCURRENCY || '3');
 
 const connection = {
   host: process.env.REDIS_HOST || 'localhost',
@@ -19,37 +23,34 @@ const connection = {
 };
 
 const updateSourceFile = async (id, status, progress, errorMessage = null) => {
-  await pool.query(
-    'UPDATE source_files SET status=$1, progress=$2, error_message=$3 WHERE id=$4',
-    [status, progress, errorMessage, id]
-  );
+  let query;
+  let params;
 
-  // Push ke semua client yang sedang subscribe
-  pushEvent(id, 'status_update', {
-    source_file_id: id,
-    status,
-    progress,
-    error_message:  errorMessage,
-  });
+  if (status === 'processing') {
+    query = `UPDATE source_files 
+             SET status=$1, progress=$2, error_message=$3,
+             started_at = CASE WHEN started_at IS NULL THEN now() ELSE started_at END
+             WHERE id=$4`;
+    params = [status, progress, errorMessage, id];
+  } else if (status === 'completed' || status === 'failed') {
+    query  = 'UPDATE source_files SET status=$1, progress=$2, error_message=$3, completed_at=now() WHERE id=$4';
+    params = [status, progress, errorMessage, id];
+  } else {
+    query  = 'UPDATE source_files SET status=$1, progress=$2, error_message=$3 WHERE id=$4';
+    params = [status, progress, errorMessage, id];
+  }
 
-  // Push event khusus untuk status terminal
+  await pool.query(query, params);
+
+
   if (status === 'completed') {
-    pushEvent(id, 'completed', {
-      source_file_id: id,
-      message: 'Semua dokumen berhasil diproses',
-    });
-  }
-  if (status === 'failed') {
-    pushEvent(id, 'failed', {
-      source_file_id: id,
-      message: errorMessage || 'Pemrosesan gagal',
-    });
-  }
-  if (status === 'pending_review') {
-    pushEvent(id, 'pending_review', {
-      source_file_id: id,
-      message: 'Confidence rendah, perlu review manual',
-    });
+    emitCompleted(id);
+  } else if (status === 'failed') {
+    emitFailed(id, errorMessage);
+  } else if (status === 'pending_review') {
+    emitPendingReview(id);
+  } else {
+    emitStatusUpdate(id, status, progress);
   }
 };
 
@@ -141,6 +142,16 @@ const groupBoundaries = (boundaries) => {
   return [...groupMap.values()].sort((a, b) => a.start_page - b.start_page);
 };
 
+const runDocWithConcurrency = async (tasks, concurrency) => {
+  for (let i = 0; i < tasks.length; i += concurrency) {
+    const batch = tasks.slice(i, i + concurrency);
+    const batchNum = Math.floor(i / concurrency) + 1;
+    const total = Math.ceil(tasks.length / concurrency);
+    console.info(`[Worker] Doc batch ${batchNum}/${total} — ${batch.length} doc(s) parallel`);
+    await Promise.all(batch.map((task) => task()));
+  }
+};
+
 // ── Worker ─────────────────────────────────────────────────────────────────
 const worker = new Worker(
   'extraction',
@@ -156,7 +167,12 @@ const worker = new Worker(
       // ── FASE 1: Cheap AI — Detect Boundaries ───────────────────────────
       console.info('[Worker] Phase 1: boundary detection...');
       const totalPages = await getPdfPageCount(filePath);
-      const boundaries = await detectBoundaries(filePath);
+      const { boundaries, usage: phase1Usage } = await detectBoundaries(filePath);
+      const phase1Pricing = calculatePrice(
+        process.env.GEMINI_CHEAP_MODEL ?? 'gemini-2.5-flash-lite',
+        phase1Usage?.prompt_tokens ?? 0,
+        phase1Usage?.output_tokens ?? 0,
+      );
 
       const normalized = boundaries.map((b) => ({
         ...b,
@@ -215,10 +231,11 @@ const worker = new Worker(
         [sourceFileId]
       );
 
-      console.info(`[Worker] Phase 2: extracting ${pendingJobs.length} document(s)...`);
+      console.info(`[Worker] Phase 2: extracting ${pendingJobs.length} document(s) — doc concurrency: ${DOC_CONCURRENCY}`);
 
-      for (let i = 0; i < pendingJobs.length; i++) {
-        const { job_id, document_id, file_path, schema_path, doc_code } = pendingJobs[i];
+      let completedCount = 0;
+
+      const docTasks = pendingJobs.map(({ job_id, document_id, file_path, schema_path, doc_code }) => async () => {
         await updateJob(job_id, 'processing', 0);
 
         try {
@@ -227,6 +244,8 @@ const worker = new Worker(
             schema_path || 'schemas/999.json',
             doc_code || '999'
           );
+
+          const rawData = transformToRaw(doc_code || '999', fields, items);
 
           const client = await pool.connect();
           try {
@@ -237,12 +256,12 @@ const worker = new Worker(
               (extraction_job_id, ai_model,
               prompt_tokens, output_tokens, total_tokens,
               input_price, output_price, total_price,
-              total_pages, duration_ms)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+              total_pages, duration_ms, raw_data)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
               RETURNING id`,
               [
                 job_id,
-                SMART_MODEL,
+                FLAGSHIP_MODEL,
                 usage?.prompt_tokens  ?? 0,
                 usage?.output_tokens  ?? 0,
                 usage?.total_tokens   ?? 0,
@@ -251,6 +270,7 @@ const worker = new Worker(
                 pricing?.total_price  ?? 0,
                 usage?.total_pages    ?? 1,
                 usage?.wall_clock_ms  ?? 0,
+                JSON.stringify(rawData),
               ]
             );
             const resultId = resultRows[0].id;
@@ -260,9 +280,7 @@ const worker = new Worker(
 
             const status = parseError ? 'failed' : 'completed';
             await client.query(
-              `UPDATE extraction_jobs
-   SET status=$1, progress=100, completed_at=now()
-   WHERE id=$2`,
+              'UPDATE extraction_jobs SET status=$1, progress=100, completed_at=now() WHERE id=$2',
               [status, job_id]
             );
             await client.query(
@@ -288,12 +306,36 @@ const worker = new Worker(
           );
         }
 
-        const progress = 50 + Math.round(((i + 1) / pendingJobs.length) * 45);
+        // ── Update progress setelah tiap dokumen selesai ───────────────
+        completedCount++;
+        const progress = 50 + Math.round((completedCount / pendingJobs.length) * 45);
         await updateSourceFile(sourceFileId, 'processing', progress);
         await job.updateProgress(progress);
-      }
+      });
+
+      await runDocWithConcurrency(docTasks, DOC_CONCURRENCY);
+
+      const { rows: jobPrices } = await pool.query(
+        `SELECT COALESCE(SUM(er.total_price), 0) AS smart_total
+        FROM extraction_results er
+        JOIN extraction_jobs ej ON ej.id = er.extraction_job_id
+        JOIN documents d ON d.id = ej.document_id
+        WHERE d.source_file_id = $1`,
+        [sourceFileId]
+      );
+
+      const smartTotalPrice = parseFloat(jobPrices[0].smart_total);
+      const cheapTotalPrice = phase1Pricing.total_price;
+      const grandTotal = parseFloat((smartTotalPrice + cheapTotalPrice).toFixed(8));
+
+      await pool.query('UPDATE source_files SET cheap_total_price = $1, flagship_total_price = $2, total_price = $3 WHERE id = $4',
+        [cheapTotalPrice, smartTotalPrice, grandTotal, sourceFileId]
+      );
+
+      console.info(`[Worker] Price summary — cheap: $${cheapTotalPrice} | smart: $${smartTotalPrice} | total: $${grandTotal}`);
 
       await updateSourceFile(sourceFileId, 'completed', 100);
+
 
       const webhookUrl = process.env.WEBHOOK_URL;
       if (webhookUrl) {

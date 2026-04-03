@@ -1,8 +1,14 @@
+
 /* eslint-disable camelcase */
 import { readFile } from 'fs/promises';
+import path from 'path';
+import { Blob } from 'buffer';
 import ai, { CHEAP_MODEL } from '../../config/gemini.js';
+import { getPdfPageCount, splitPdf } from '../../utils/pdf-helper.js';
+
 
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD || '0.7');
+const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE || '50');
 
 const DOC_TYPES = {
   '380':'Invoice', '217':'Packing List', '001':'CIPL',
@@ -10,16 +16,15 @@ const DOC_TYPES = {
   '861':'COO', '704':'Master Bill of Lading', '741':'Master AWB',
   '958':'Lartas', '457':'SKB PPh', '800':'POSTEL', '813':'CK',
   '846':'SKEM', '854':'BPOM', '871':'AKL', '888':'Pengecualian Perijinan',
-  '957':'SNI', '959':'PI', '999':'Lainnya', '000': 'Cukai',
+  '957':'SNI', '959':'PI', '999':'Lainnya', '000':'Cukai',
 };
 
 const TYPE_LIST = Object.entries(DOC_TYPES)
   .map(([code, name]) => `${code}: ${name}`).join('\n');
 
-const detectBoundaries = async (filePath) => {
-  console.info(`[Phase1] Detecting boundaries: ${filePath}`);
-
-  const pdfBuffer = await readFile(filePath);
+// ── Detect boundaries untuk satu chunk PDF ────────────────────────────────
+const detectChunk = async (chunkPath, chunkStartPage) => {
+  const pdfBuffer = await readFile(chunkPath);
   const base64Pdf = pdfBuffer.toString('base64');
 
   const prompt = `You are analyzing a PDF document for a freight forwarding company.
@@ -37,10 +42,10 @@ Available document type codes:
 ${TYPE_LIST}
 
 Rules:
-- Pages are 1-based
+- Pages are 1-based and relative to THIS chunk only
 - A document starts when you see a new document header or title
 - Different vendors = different document instances even if same type
-- IMPORTANT: Pages with the SAME vendor AND the SAME invoice/document number MUST be grouped as ONE document with a single page range (start_page to end_page)
+- IMPORTANT: Pages with the SAME vendor AND the SAME invoice/document number MUST be grouped as ONE document
 - Do NOT create separate entries for continuation pages of the same invoice/document
 - Continuation pages usually have: no new invoice number, continued table rows, same header info
 - Confidence < ${CONFIDENCE_THRESHOLD} means uncertain boundary
@@ -67,7 +72,14 @@ Return ONLY valid JSON, no explanation:
         { inlineData: { mimeType: 'application/pdf', data: base64Pdf } },
       ],
     }],
+    config: { maxOutputTokens: 65536 },
   });
+
+  const usage = {
+    prompt_tokens: response.usageMetadata?.promptTokenCount ?? 0,
+    output_tokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+    total_tokens:  response.usageMetadata?.totalTokenCount ?? 0,
+  };
 
   const rawText = response.text.replace(/```json|```/g, '').trim();
 
@@ -75,31 +87,107 @@ Return ONLY valid JSON, no explanation:
     const parsed    = JSON.parse(rawText);
     const documents = parsed.documents || [];
 
-    const result = documents.map((doc) => ({
-      ...doc,
-      invoice_number: doc.invoice_number ?? null,
-      needs_review:   doc.confidence < CONFIDENCE_THRESHOLD,
-    }));
-
-    console.info(`[Phase1] Found ${result.length} document(s)`);
-    result.forEach((d, i) =>
-      console.info(`  [${i+1}] code=${d.doc_code} invoice=${d.invoice_number} pages=${d.start_page}-${d.end_page} confidence=${d.confidence} review=${d.needs_review}`)
-    );
-
-    return result;
+    // Offset page numbers sesuai posisi chunk dalam PDF asli
+    return {
+      documents: documents.map((doc) => ({
+        ...doc,
+        invoice_number: doc.invoice_number ?? null,
+        start_page: doc.start_page + chunkStartPage - 1,
+        end_page: doc.end_page + chunkStartPage - 1,
+        needs_review: doc.confidence < CONFIDENCE_THRESHOLD,
+      })),
+      usage,
+    };
   } catch (e) {
-    console.error(`[Phase1] Parse failed: ${e.message}`);
-    return [{
-      doc_code: '999',
-      vendor: null,
-      invoice_number: null,
-      start_page: 1,
-      end_page: 999,
-      confidence: 0,
-      needs_review: true,
-    }];
+    console.error(`[Phase1] Chunk parse failed (offset ${chunkStartPage}): ${e.message}`);
+    // Fallback: tandai seluruh chunk sebagai satu dokumen unknown
+    return {
+      documents: [{
+        doc_code: '999',
+        vendor: null,
+        invoice_number: null,
+        start_page: chunkStartPage,
+        end_page: chunkStartPage + CHUNK_SIZE - 1,
+        confidence: 0,
+        needs_review: true,
+      }],
+      usage,
+    };
+
   }
 };
 
+// ── Main export ────────────────────────────────────────────────────────────
+const detectBoundaries = async (filePath) => {
+  console.info(`[Phase1] Detecting boundaries: ${filePath}`);
+
+  const pdfBuffer  = await readFile(filePath);
+  const sizeMB = (pdfBuffer.length / 1024 / 1024).toFixed(2);
+  const totalPages = await getPdfPageCount(filePath);
+
+  console.info(`[Phase1] File size: ${sizeMB}MB — ${totalPages} pages — chunk size: ${CHUNK_SIZE}`);
+
+  const uploadDir = path.dirname(filePath);
+  const allDocs   = [];
+  const chunks    = [];
+
+  // ── Buat chunk PDF ───────────────────────────────────────────────────────
+  for (let start = 1; start <= totalPages; start += CHUNK_SIZE) {
+    const end       = Math.min(start + CHUNK_SIZE - 1, totalPages);
+    const chunkPath = await splitPdf(filePath, start, end, uploadDir);
+    chunks.push({ chunkPath, start, end });
+  }
+
+  console.info(`[Phase1] Processing ${chunks.length} chunk(s)...`);
+
+  const totalUsage = { prompt_tokens: 0, output_tokens: 0, total_tokens: 0 };
+
+  try {
+    // ── Proses setiap chunk secara sequential ────────────────────────────
+    for (const { chunkPath, start, end } of chunks) {
+      console.info(`[Phase1] Chunk pages ${start}-${end}...`);
+      const { documents, usage } = await detectChunk(chunkPath, start);
+      allDocs.push(...documents);
+      totalUsage.prompt_tokens += usage.prompt_tokens;
+      totalUsage.output_tokens += usage.output_tokens;
+      totalUsage.total_tokens  += usage.total_tokens;
+      console.info(`[Phase1] Chunk ${start}-${end}: found ${documents.length} doc(s)`);
+    }
+  } finally {
+    // Cleanup semua chunk files
+    await Promise.all(
+      chunks.map(({ chunkPath }) =>
+        import('fs/promises').then(({ unlink }) => unlink(chunkPath).catch(() => {}))
+      )
+    );
+  }
+
+  // ── Grouping cross-chunk: merge dokumen dengan vendor+invoice sama ──────
+  const groupMap = new Map();
+
+  for (const doc of allDocs) {
+    const key = doc.invoice_number
+      ? `${doc.doc_code}|${doc.vendor ?? ''}|${doc.invoice_number}`
+      : `${doc.doc_code}|${doc.vendor ?? ''}|page_${doc.start_page}`;
+
+    if (!groupMap.has(key)) {
+      groupMap.set(key, { ...doc });
+    } else {
+      const existing    = groupMap.get(key);
+      existing.start_page = Math.min(existing.start_page, doc.start_page);
+      existing.end_page   = Math.max(existing.end_page,   doc.end_page);
+      existing.confidence = Math.min(existing.confidence, doc.confidence);
+    }
+  }
+
+  const result = [...groupMap.values()].sort((a, b) => a.start_page - b.start_page);
+
+  console.info(`[Phase1] Total: ${allDocs.length} raw → ${result.length} grouped`);
+  result.forEach((d, i) =>
+    console.info(`  [${i+1}] code=${d.doc_code} invoice=${d.invoice_number} pages=${d.start_page}-${d.end_page} confidence=${d.confidence} review=${d.needs_review}`)
+  );
+
+  return { boundaries: result, usage: totalUsage };
+};
 
 export default detectBoundaries;

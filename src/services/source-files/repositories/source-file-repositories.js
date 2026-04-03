@@ -4,9 +4,13 @@ import { NotFoundError } from '../../../exceptions/index.js';
 
 class SourceFileRepositories {
   #mapRow(row) {
+    const durationMs = row.started_at && row.completed_at
+      ? new Date(row.completed_at) - new Date(row.started_at)
+      : null;
+
     return {
       id: row.id,
-      file_name:row.file_name,
+      file_name: row.file_name,
       file_path: row.file_path,
       mime_type: row.mime_type,
       page_count: row.page_count,
@@ -15,6 +19,17 @@ class SourceFileRepositories {
       error_message: row.error_message,
       created_at: row.created_at,
       updated_at: row.updated_at,
+      processing_time: durationMs !== null ? {
+        started_at:   row.started_at,
+        completed_at: row.completed_at,
+        duration_ms:  durationMs,
+        duration_sec: parseFloat((durationMs / 1000).toFixed(2)),
+      } : null,
+      pricing: {
+        cheap_total_price: parseFloat(row.cheap_total_price  ?? 0),
+        smart_total_price: parseFloat(row.flagship_total_price ?? 0),
+        total_price: parseFloat(row.total_price ?? 0),
+      },
       uploaded_by: row.uploader_id ? {
         id: row.uploader_id, name: row.uploader_name,
         email: row.uploader_email, role: row.uploader_role,
@@ -25,7 +40,8 @@ class SourceFileRepositories {
   #baseQuery() {
     return `SELECT sf.id, sf.file_name, sf.mime_type, sf.page_count,
   sf.status, sf.progress, sf.error_message, sf.file_path,
-  sf.created_at, sf.updated_at,
+  sf.created_at, sf.updated_at, sf.started_at, sf.completed_at,
+   sf.cheap_total_price, sf.flagship_total_price, sf.total_price,
   u.id AS uploader_id,
   u.name  AS uploader_name,
   u.email AS uploader_email,

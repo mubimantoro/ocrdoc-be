@@ -1,7 +1,6 @@
-/* eslint-disable camelcase */
+
 import { extractionQueue } from '../../../config/queue.js';
 import { InvariantError } from '../../../exceptions/index.js';
-import { addClient, removeClient } from '../../../sse/index.js';
 import { getPdfPageCount } from '../../../utils/pdf-helper.js';
 import response from '../../../utils/response.js';
 import SourceFileRepositories from '../repositories/source-file-repositories.js';
@@ -70,7 +69,7 @@ export const retry = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-export const stream = async (req, res) => {
+/* export const stream = async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -105,4 +104,4 @@ export const stream = async (req, res) => {
     clearInterval(heartbeat);
     removeClient(id, res);
   });
-};
+}; */
