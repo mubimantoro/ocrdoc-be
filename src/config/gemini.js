@@ -6,6 +6,6 @@ const ai = new GoogleGenAI({
 });
 
 export const CHEAP_MODEL = process.env.GEMINI_CHEAP_MODEL;
-export const SMART_MODEL = process.env.GEMINI_SMART_MODEL;
+export const FLAGSHIP_MODEL = process.env.GEMINI_FLAGSHIP_MODEL;
 
 export default ai;

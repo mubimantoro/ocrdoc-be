@@ -125,6 +125,33 @@ class DocumentRepositories {
     return doc;
   }
 
+  async findRawById(id) {
+    const { rows } = await pool.query(
+      `SELECT d.id, dt.code AS doc_code
+     FROM documents d
+     LEFT JOIN document_types dt ON dt.id = d.document_type_id
+     WHERE d.id = $1 LIMIT 1`,
+      [id]
+    );
+    if (!rows.length) throw new NotFoundError('Document tidak ditemukan');
+
+    // Ambil raw_data dari extraction_results terbaru
+    const { rows: resultRows } = await pool.query(
+      `SELECT er.raw_data
+     FROM extraction_results er
+     JOIN extraction_jobs ej ON ej.id = er.extraction_job_id
+     WHERE ej.document_id = $1
+     ORDER BY er.created_at DESC LIMIT 1`,
+      [id]
+    );
+
+    return {
+      document_id: rows[0].id,
+      doc_code:    rows[0].doc_code,
+      data:        resultRows[0]?.raw_data ?? null,
+    };
+  }
+
   #mapRow(row) {
     const durationMs = row.started_at && row.completed_at
       ? new Date(row.completed_at) - new Date(row.started_at)

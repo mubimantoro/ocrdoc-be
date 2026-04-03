@@ -1,7 +1,7 @@
 /* eslint-disable camelcase */
 import path from 'path';
 import { readFile, unlink } from 'fs/promises';
-import ai, { SMART_MODEL } from '../../config/gemini.js';
+import ai, { FLAGSHIP_MODEL } from '../../config/gemini.js';
 import { getPdfPageCount, splitPdf } from '../../utils/pdf-helper.js';
 import { calculatePrice } from '../../utils/token-pricing.js';
 
@@ -77,7 +77,7 @@ Return ONLY valid JSON in this exact format:
 }`;
 
   const response = await ai.models.generateContent({
-    model:    SMART_MODEL,
+    model: FLAGSHIP_MODEL,
     contents: [{
       parts: [
         { text: prompt },
@@ -190,8 +190,8 @@ const extractDocument = async (docFilePath, schemaPath, docCode) => {
     });
 
     const { fields, items, usage } = mergePageResults([result]);
-    const pricing                  = calculatePrice(SMART_MODEL, usage.prompt_tokens, usage.output_tokens);
-    const wallClockMs              = Date.now() - wallStart;
+    const pricing = calculatePrice(FLAGSHIP_MODEL, usage.prompt_tokens, usage.output_tokens);
+    const wallClockMs = Date.now() - wallStart;
 
     console.info(
       `[Phase2] Done — ${fields.length} fields, ${items.length} items | ` +
@@ -238,8 +238,8 @@ const extractDocument = async (docFilePath, schemaPath, docCode) => {
     const remainingResults = await runWithConcurrency(remainingTasks, CONCURRENCY);
 
     const { fields, items, usage } = mergePageResults([firstResult, ...remainingResults]);
-    const pricing                  = calculatePrice(SMART_MODEL, usage.prompt_tokens, usage.output_tokens);
-    const wallClockMs              = Date.now() - wallStart;
+    const pricing = calculatePrice(FLAGSHIP_MODEL, usage.prompt_tokens, usage.output_tokens);
+    const wallClockMs = Date.now() - wallStart;
 
     console.info(
       `[Phase2] Done — ${fields.length} fields, ${items.length} items | ` +

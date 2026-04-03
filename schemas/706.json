@@ -1,0 +1,39 @@
+{
+  "doc_code": "706",
+  "doc_name": "Sea Waybill",
+  "fields": [
+    "shipper_name", "shipper_address", "shipper_phone", "shipper_tax_id",
+    "consignee_name", "consignee_address", "consignee_phone", "consignee_tax_id",
+    "notify_party_name", "notify_party_address", "notify_party_phone", "notify_party_tax_id",
+    "also_notify_party_name", "also_notify_party_address",
+    "forwarding_agent",
+    "vessel_name", "voyage_no",
+    "port_of_loading", "place_of_receipt", "place_of_receipt_date",
+    "port_of_discharge", "place_of_delivery",
+    "pre_carriage_by",
+    "service_type", "movement_type",
+    "waybill_no", "document_no", "export_references",
+    "date_of_issue", "place_of_issue", "date_laden_on_board",
+    "number_of_original_waybills",
+    "prepaid_at", "collect_at",
+    "exchange_rate_prepaid", "exchange_rate_collect",
+    "country_of_origin", "point_of_origin",
+    "onward_inland_routing",
+    "weight", "uow", "measurement", "uom",
+    "declared_value",
+    "total_packages_in_words"
+  ],
+  "containers": [
+    "container_code", "container_size", "seal_code",
+    "container_type_code", "container_type"
+  ],
+  "items": [
+    "product_name", "hs_code", "qty", "packaging_unit",
+    "invoice_number", "country_of_origin", "eta"
+  ],
+  "charges": [
+    "charge_name", "revenue_tons", "rate", "per",
+    "prepaid_amount", "prepaid_currency",
+    "collect_amount", "collect_currency"
+  ]
+}

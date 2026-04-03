@@ -8,9 +8,13 @@ const PRICING = {
     input:  0.30, // $0.30 / 1M input tokens
     output: 2.50, // $2.50 / 1M output tokens
   },
+  'gemini-3-flash-preview': {
+    input:  0.50,
+    output: 3.00,
+  }
 };
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3-flash-preview';
 
 /**
  * Hitung estimasi biaya berdasarkan model dan jumlah token
@@ -22,13 +26,13 @@ const DEFAULT_MODEL = 'gemini-2.5-flash';
 export const calculatePrice = (model, promptTokens, outputTokens) => {
   const pricing = PRICING[model] ?? PRICING[DEFAULT_MODEL];
 
-  const inputPrice  = (promptTokens  / 1_000_000) * pricing.input;
-  const outputPrice = (outputTokens  / 1_000_000) * pricing.output;
-  const totalPrice  = inputPrice + outputPrice;
+  const inputPrice = (promptTokens / 1_000_000) * pricing.input;
+  const outputPrice = (outputTokens / 1_000_000) * pricing.output;
+  const totalPrice = inputPrice + outputPrice;
 
   return {
-    input_price:  parseFloat(inputPrice.toFixed(8)),
+    input_price: parseFloat(inputPrice.toFixed(8)),
     output_price: parseFloat(outputPrice.toFixed(8)),
-    total_price:  parseFloat(totalPrice.toFixed(8)),
+    total_price: parseFloat(totalPrice.toFixed(8)),
   };
 };
