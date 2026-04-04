@@ -15,5 +15,7 @@
     "number_item", "hs_code", "description",
     "quantity_goods", "unit_of_measurement", "origin"
   ],
-  "invoice_list_number": ["invoice_number"]
+  "invoice_list": {
+    "fields": ["invoice_number"]
+  }
 }

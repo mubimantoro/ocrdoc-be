@@ -142,15 +142,22 @@ const detectBoundaries = async (filePath) => {
   const totalUsage = { prompt_tokens: 0, output_tokens: 0, total_tokens: 0 };
 
   try {
-    // ── Proses setiap chunk secara sequential ────────────────────────────
-    for (const { chunkPath, start, end } of chunks) {
-      console.info(`[Phase1] Chunk pages ${start}-${end}...`);
-      const { documents, usage } = await detectChunk(chunkPath, start);
+    // ── Proses setiap chunk secara parraler ────────────────────────────
+    const chunkResults = await Promise.all(
+      chunks.map(async ({ chunkPath, start, end }) => {
+        console.info(`[Phase1] Chunk pages ${start}-${end}...`);
+        const chunkStart = Date.now();
+        const { documents, usage } = await detectChunk(chunkPath, start);
+        console.info(`[Phase1] Chunk ${start}-${end}: found ${documents.length} doc(s) — ${Date.now() - chunkStart}ms`);
+        return { documents, usage };
+      })
+    );
+
+    for (const { documents, usage } of chunkResults) {
       allDocs.push(...documents);
       totalUsage.prompt_tokens += usage.prompt_tokens;
       totalUsage.output_tokens += usage.output_tokens;
       totalUsage.total_tokens  += usage.total_tokens;
-      console.info(`[Phase1] Chunk ${start}-${end}: found ${documents.length} doc(s)`);
     }
   } finally {
     // Cleanup semua chunk files
