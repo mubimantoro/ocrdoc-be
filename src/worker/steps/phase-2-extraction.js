@@ -14,7 +14,11 @@ const BATCH_DELAY_MS = parseInt(process.env.AI_BATCH_DELAY_MS);
 const loadSchema = async (schemaPath) => {
   try {
     const content = await readFile(path.resolve(schemaPath), 'utf-8');
-    return JSON.parse(content);
+    const raw = JSON.parse(content);
+    return {
+      fields: raw.fields ?? [],
+      items:  raw.invoice_list?.items ?? raw.items ?? [],
+    };
   } catch {
     return {
       fields: ['document_number', 'document_date', 'issuer', 'recipient', 'total_amount'],

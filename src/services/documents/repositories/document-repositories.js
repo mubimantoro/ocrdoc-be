@@ -135,21 +135,55 @@ class DocumentRepositories {
     );
     if (!rows.length) throw new NotFoundError('Document tidak ditemukan');
 
-    // Ambil raw_data dari extraction_results terbaru
     const { rows: resultRows } = await pool.query(
-      `SELECT er.raw_data
-     FROM extraction_results er
-     JOIN extraction_jobs ej ON ej.id = er.extraction_job_id
-     WHERE ej.document_id = $1
-     ORDER BY er.created_at DESC LIMIT 1`,
+      `SELECT er.id AS result_id
+   FROM extraction_results er
+   JOIN extraction_jobs ej ON ej.id = er.extraction_job_id
+   JOIN documents d ON d.id = ej.document_id
+   WHERE d.id = $1
+   ORDER BY er.created_at DESC LIMIT 1`,
       [id]
     );
 
+    if (!resultRows.length) return { document_id: rows[0].id, doc_code: rows[0].doc_code, data: null };
+
+    const resultId = resultRows[0].result_id;
+
+    const { rows: fields } = await pool.query(
+      'SELECT key, value FROM fields WHERE extraction_result_id = $1',
+      [resultId]
+    );
+
+    const { rows: itemData } = await pool.query(
+      `SELECT i.id AS item_id, i.row_index, itf.key, itf.value
+     FROM items i
+     LEFT JOIN item_fields itf ON itf.item_id = i.id
+     WHERE i.extraction_result_id = $1
+     ORDER BY i.row_index`,
+      [resultId]
+    );
+
+    const itemsMap = new Map();
+    for (const row of itemData) {
+      if (!itemsMap.has(row.item_id)) {
+        itemsMap.set(row.item_id, { row_index: row.row_index, columns: [] });
+      }
+      if (row.key) {
+        itemsMap.get(row.item_id).columns.push({ key: row.key, value: row.value });
+      }
+    }
+
+    const items = Array.from(itemsMap.values());
+
+    const { transformToRaw } = await import('../../../utils/raw-transformer.js');
+    const data = transformToRaw(rows[0].doc_code || '999', fields, items);
+
     return {
       document_id: rows[0].id,
-      doc_code:    rows[0].doc_code,
-      data:        resultRows[0]?.raw_data ?? null,
+      doc_code: rows[0].doc_code,
+      data,
     };
+
   }
 
   #mapRow(row) {

@@ -92,28 +92,42 @@ const getDocumentType = async (code) => {
 };
 
 const saveFields = async (client, resultId, fields) => {
-  for (const { key, value } of fields) {
-    await client.query(
-      'INSERT INTO fields (extraction_result_id, key, value) VALUES ($1, $2, $3)',
-      [resultId, key, value ?? null]
-    );
-  }
+  if (!fields.length) return;
+  const values = fields.map((_, i) =>
+    `($1, $${i * 2 + 2}, $${i * 2 + 3})`
+  ).join(', ');
+  const params = [resultId, ...fields.flatMap(({ key, value }) => [key, value ?? null])];
+  await client.query(
+    `INSERT INTO fields (extraction_result_id, key, value) VALUES ${values}`,
+    params
+  );
 };
 
 const saveItems = async (client, resultId, items) => {
-  for (const item of items) {
-    const { rows } = await client.query(
-      'INSERT INTO items (extraction_result_id, row_index) VALUES ($1, $2) RETURNING id',
-      [resultId, item.row_index]
-    );
-    const itemId = rows[0].id;
-    for (const { key, value } of (item.columns || [])) {
-      await client.query(
-        'INSERT INTO item_fields (item_id, key, value) VALUES ($1, $2, $3)',
-        [itemId, key, value ?? null]
-      );
-    }
-  }
+  if (!items.length) return;
+
+  // Bulk insert items dulu
+  const itemValues = items.map((_, i) => `($1, $${i + 2})`).join(', ');
+  const itemParams = [resultId, ...items.map((item) => item.row_index)];
+  const { rows: itemRows } = await client.query(
+    `INSERT INTO items (extraction_result_id, row_index) VALUES ${itemValues} RETURNING id`,
+    itemParams
+  );
+
+  // Bulk insert item_fields
+  const allColumns = items.flatMap((item, idx) =>
+    (item.columns || []).map(({ key, value }) => ({ itemId: itemRows[idx].id, key, value }))
+  );
+  if (!allColumns.length) return;
+
+  const colValues = allColumns.map((_, i) =>
+    `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`
+  ).join(', ');
+  const colParams = allColumns.flatMap(({ itemId, key, value }) => [itemId, key, value ?? null]);
+  await client.query(
+    `INSERT INTO item_fields (item_id, key, value) VALUES ${colValues}`,
+    colParams
+  );
 };
 
 const groupBoundaries = (boundaries) => {
@@ -158,6 +172,7 @@ const worker = new Worker(
 
   async (job) => {
     const { sourceFileId, filePath } = job.data;
+    const jobStart = Date.now();
     console.info(`[Worker] Start job ${job.id} — sourceFileId: ${sourceFileId}`);
 
     try {
@@ -166,8 +181,11 @@ const worker = new Worker(
 
       // ── FASE 1: Cheap AI — Detect Boundaries ───────────────────────────
       console.info('[Worker] Phase 1: boundary detection...');
+      const phase1Start = Date.now();
       const totalPages = await getPdfPageCount(filePath);
       const { boundaries, usage: phase1Usage } = await detectBoundaries(filePath);
+      const phase1Ms = Date.now() - phase1Start;
+      console.info(`[Timing] Phase 1: ${phase1Ms}ms`);
       const phase1Pricing = calculatePrice(
         process.env.GEMINI_CHEAP_MODEL ?? 'gemini-2.5-flash-lite',
         phase1Usage?.prompt_tokens ?? 0,
@@ -187,6 +205,7 @@ const worker = new Worker(
       // ── Split PDF + Buat Document records ─────────────────────────────
       console.info(`[Worker] Splitting into ${normalized.length} document(s)...`);
 
+      const splitStart = Date.now();
       for (const boundary of groupedBoundaries) {
         const { doc_code, vendor, start_page, end_page, confidence, needs_review } = boundary;
 
@@ -216,6 +235,8 @@ const worker = new Worker(
           [documentId]
         );
       }
+      const splitMs = Date.now() - splitStart;
+      console.info(`[Timing] PDF split + DB insert documents: ${splitMs}ms`);
 
       await updateSourceFile(sourceFileId, 'processing', 50);
       await job.updateProgress(50);
@@ -234,8 +255,10 @@ const worker = new Worker(
       console.info(`[Worker] Phase 2: extracting ${pendingJobs.length} document(s) — doc concurrency: ${DOC_CONCURRENCY}`);
 
       let completedCount = 0;
+      const phase2Start = Date.now();
 
       const docTasks = pendingJobs.map(({ job_id, document_id, file_path, schema_path, doc_code }) => async () => {
+        const docStart = Date.now();
         await updateJob(job_id, 'processing', 0);
 
         try {
@@ -247,6 +270,7 @@ const worker = new Worker(
 
           const rawData = transformToRaw(doc_code || '999', fields, items);
 
+          const dbStart = Date.now();
           const client = await pool.connect();
           try {
             await client.query('BEGIN');
@@ -289,7 +313,9 @@ const worker = new Worker(
             );
 
             await client.query('COMMIT');
-            console.info(`[Worker] Document ${document_id}: ${status}`);
+            const docMs = Date.now() - docStart;
+            const dbMs  = Date.now() - dbStart;
+            console.info(`[Timing] Doc ${document_id}: total=${docMs}ms | ai=${usage?.wall_clock_ms ?? 0}ms | db=${dbMs}ms | pages=${usage?.total_pages} | status=${status}`);
           } catch (err) {
             await client.query('ROLLBACK');
             throw err;
@@ -314,6 +340,16 @@ const worker = new Worker(
       });
 
       await runDocWithConcurrency(docTasks, DOC_CONCURRENCY);
+
+      const phase2Ms  = Date.now() - phase2Start;
+      const totalMs   = Date.now() - jobStart;
+      console.info(`[Timing] Phase 2: ${phase2Ms}ms`);
+      console.info('[Timing] ─────────────────────────────────────────');
+      console.info(`[Timing] Phase 1 (boundary):     ${phase1Ms}ms (${((phase1Ms/totalMs)*100).toFixed(1)}%)`);
+      console.info(`[Timing] PDF split + DB docs:    ${splitMs}ms (${((splitMs/totalMs)*100).toFixed(1)}%)`);
+      console.info(`[Timing] Phase 2 (extraction):   ${phase2Ms}ms (${((phase2Ms/totalMs)*100).toFixed(1)}%)`);
+      console.info(`[Timing] Total job: ${totalMs}ms`);
+      console.info('[Timing] ─────────────────────────────────────────');
 
       const { rows: jobPrices } = await pool.query(
         `SELECT COALESCE(SUM(er.total_price), 0) AS smart_total
