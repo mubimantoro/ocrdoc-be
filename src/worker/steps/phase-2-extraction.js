@@ -6,9 +6,8 @@ import { getPdfPageCount, splitPdf } from '../../utils/pdf-helper.js';
 import { calculatePrice } from '../../utils/token-pricing.js';
 
 // ── Config concurrency
-// Tier 1: 3 | Tier 2: 5 | Tier 3: 10
-const CONCURRENCY = parseInt(process.env.AI_PAGE_CONCURRENCY || '3');
-const BATCH_DELAY_MS = parseInt(process.env.AI_BATCH_DELAY_MS || '2000');
+const CONCURRENCY = parseInt(process.env.AI_PAGE_CONCURRENCY);
+const BATCH_DELAY_MS = parseInt(process.env.AI_BATCH_DELAY_MS);
 
 
 // ── Load schema ────────────────────────────────────────────────────────────
@@ -46,34 +45,40 @@ const extractSinglePage = async ({ pageFilePath, pageNum, totalPages, schema, do
 Document type: ${docCode}
 This is page ${pageNum} of ${totalPages}.
 ${contextNote}
+
+STRICT OUTPUT RULES:
+- Output MUST be 1 valid minified JSON object. No markdown, no explanation, no comments.
+- All keys in schema MUST exist. If not found: null (or [] for lists).
+- Do NOT guess or infer. If uncertain: null.
+- Dates only if explicitly written => "YYYY-MM-DD", otherwise null.
+- Numbers must be number type (no thousand separators; decimal uses dot). If uncertain: null.
+- Strings as-is (replace line breaks with 1 space, do not add punctuation).
+
+ANTI-DRIFT:
+- Extract ONLY data explicitly visible on THIS page.
+- Do NOT copy data from header context into items rows.
+- If this is NOT page 1, header fields are likely null — focus on table items only.
+
 ${fieldsDesc}
 
+ITEMS OUTPUT FORMAT (columnar — more efficient):
 ${itemsDesc}
+Return items as:
+{
+  "columns": ${JSON.stringify(schema.items ?? [])},
+  "rows": [] 
+}
+Each row must be an array with length = columns.length. Use null for missing values.
 
-Extraction rules:
-- Extract ALL data visible on THIS page only
-- If this is NOT page 1, header fields (seller, buyer, etc) are likely null — focus on table items
-- Use null for fields not found on this page
-- For items/table rows, extract EVERY row without skipping
-- Keep original values exactly as shown (do not convert or calculate)
-- For vehicle documents: include VIN, motor number, color per unit
-
-Return ONLY valid JSON in this exact format:
+Return ONLY this JSON structure:
 {
   "fields": [
-    { "key": "invoice_number", "value": "INV-2024-001" },
-    { "key": "invoice_date",   "value": "2024-01-15" }
+    { "key": "field_name", "value": "..." }
   ],
-  "items": [
-    {
-      "row_index": 1,
-      "columns": [
-        { "key": "description", "value": "Spare Part A" },
-        { "key": "quantity", "value": "10" },
-        { "key": "unit_price", "value": "250000" }
-      ]
-    }
-  ]
+  "items": {
+    "columns": ${JSON.stringify(schema.items ?? [])},
+    "rows": []
+  }
 }`;
 
   const response = await ai.models.generateContent({
@@ -97,10 +102,20 @@ Return ONLY valid JSON in this exact format:
 
   try {
     const parsed = JSON.parse(rawText);
+    const expandRows = (itemsData) => {
+      if (!itemsData || !Array.isArray(itemsData.columns) || !Array.isArray(itemsData.rows)) return [];
+      const { columns, rows } = itemsData;
+      return rows.map((row) => ({
+        columns: columns.map((col, i) => ({
+          key:   col,
+          value: (Array.isArray(row) ? row[i] : null) ?? null,
+        })),
+      }));
+    };
     return {
       pageNum,
       fields: Array.isArray(parsed.fields) ? parsed.fields : [],
-      items:  Array.isArray(parsed.items)  ? parsed.items  : [],
+      items:  expandRows(parsed.items),
       usage,
     };
   } catch (e) {
@@ -156,12 +171,11 @@ const mergePageResults = (pageResults) => {
     }
   }
 
-  // ── Aggregate usage dari semua halaman ──────────────────────────────────
   const usage = pageResults.reduce((acc, page) => ({
     prompt_tokens: acc.prompt_tokens + (page.usage?.prompt_tokens ?? 0),
     output_tokens: acc.output_tokens + (page.usage?.output_tokens ?? 0),
-    total_tokens:  acc.total_tokens  + (page.usage?.total_tokens ?? 0),
-    duration_ms:   acc.duration_ms + (page.usage?.duration_ms ?? 0),
+    total_tokens: acc.total_tokens + (page.usage?.total_tokens ?? 0),
+    duration_ms: acc.duration_ms + (page.usage?.duration_ms ?? 0),
   }), { prompt_tokens: 0, output_tokens: 0, total_tokens: 0, duration_ms: 0 });
 
   return { fields: mergedFields, items: mergedItems, usage };

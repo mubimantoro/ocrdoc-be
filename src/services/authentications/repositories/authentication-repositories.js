@@ -19,7 +19,7 @@ class AuthenticationRepositories {
   }
 
   async deleteRefreshToken(token) {
-    const { rowCount } = await this.pool.query(
+    const { rowCount } = await pool.query(
       'DELETE FROM authentications WHERE token = $1',
       [token]
     );

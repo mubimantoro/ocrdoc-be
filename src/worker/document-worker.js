@@ -12,13 +12,13 @@ import { transformToRaw } from '../utils/raw-transformer.js';
 import { FLAGSHIP_MODEL } from '../config/gemini.js';
 import { calculatePrice } from '../utils/token-pricing.js';
 
-const CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY || '3');
+const CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY);
 const UPLOAD_DIR  = process.env.UPLOAD_DIR || './uploads/temp';
-const DOC_CONCURRENCY = parseInt(process.env.QUEUE_DOC_CONCURRENCY || '3');
+const DOC_CONCURRENCY = parseInt(process.env.QUEUE_DOC_CONCURRENCY);
 
 const connection = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT) || 6379,
+  host: process.env.REDIS_HOST,
+  port: parseInt(process.env.REDIS_PORT),
   password: process.env.REDIS_PASSWORD
 };
 
@@ -187,7 +187,7 @@ const worker = new Worker(
       // ── Split PDF + Buat Document records ─────────────────────────────
       console.info(`[Worker] Splitting into ${normalized.length} document(s)...`);
 
-      for (const boundary of normalized) {
+      for (const boundary of groupedBoundaries) {
         const { doc_code, vendor, start_page, end_page, confidence, needs_review } = boundary;
 
         const docFilePath = await splitPdf(filePath, start_page, end_page, UPLOAD_DIR);
@@ -371,7 +371,7 @@ const worker = new Worker(
       await job.updateProgress(100);
       console.info(`[Worker] Job ${job.id} completed`);
 
-      return { sourceFileId, total: normalized.length };
+      return { sourceFileId, total: groupedBoundaries.length };
 
     } catch (err) {
       console.error(`[Worker] Fatal job ${job.id}: ${err.message}`);
