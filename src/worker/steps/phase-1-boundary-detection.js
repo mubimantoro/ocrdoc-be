@@ -2,7 +2,6 @@
 /* eslint-disable camelcase */
 import { readFile } from 'fs/promises';
 import path from 'path';
-import { Blob } from 'buffer';
 import ai, { CHEAP_MODEL } from '../../config/gemini.js';
 import { getPdfPageCount, splitPdf } from '../../utils/pdf-helper.js';
 

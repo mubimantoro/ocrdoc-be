@@ -4,8 +4,8 @@ import pool from '../config/database.js';
 import { Worker } from 'bullmq';
 
 const connection = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT) || 6379,
+  host: process.env.REDIS_HOST,
+  port: parseInt(process.env.REDIS_PORT),
   password: process.env.REDIS_PASSWORD
 };
 

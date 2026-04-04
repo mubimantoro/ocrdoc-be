@@ -48,8 +48,7 @@ class SourceFileRepositories {
   r.name  AS uploader_role
   FROM source_files sf
   LEFT JOIN users u ON u.id  = sf.uploaded_by
-  LEFT JOIN user_roles ur ON ur.user_id = u.id
-  LEFT JOIN roles r ON r.id  = ur.role_id`;
+  LEFT JOIN roles r  ON r.id  = u.role_id`;
   }
 
   async findAll({ page = 1, limit = 10, status = null } = {}) {

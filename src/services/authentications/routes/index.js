@@ -4,7 +4,7 @@ import { login, logout, refresh } from '../controller/authentication-controller.
 const router = Router();
 
 router.post('/login', login);
-router.put('/refresh',  refresh);
+router.put('/refresh', refresh);
 router.delete('/logout', logout);
 
 export default router;
