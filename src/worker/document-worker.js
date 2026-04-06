@@ -129,37 +129,6 @@ const saveItems = async (client, resultId, items) => {
   );
 };
 
-const groupBoundaries = (boundaries) => {
-  const groupMap = new Map();
-
-  for (const boundary of boundaries) {
-    const key = boundary.invoice_number
-      ? `${boundary.doc_code}|${boundary.vendor ?? ''}|${boundary.invoice_number}`
-      : `${boundary.doc_code}|${boundary.vendor ?? ''}|page_${boundary.start_page}`;
-
-    if (!groupMap.has(key)) {
-      groupMap.set(key, { ...boundary });
-    } else {
-      const existing = groupMap.get(key);
-      const gap = boundary.start_page - existing.end_page;
-
-      if (gap <= 1) {
-        existing.start_page = Math.min(existing.start_page, boundary.start_page);
-        existing.end_page = Math.max(existing.end_page, boundary.end_page);
-        existing.confidence = Math.min(existing.confidence, boundary.confidence);
-      } else {
-        const uniqueKey = `${key}|page_${boundary.start_page}`;
-        groupMap.set(uniqueKey, { ...boundary });
-        console.warn(
-          `[Worker] Duplicate invoice ${boundary.invoice_number} — page gap: ${gap} — treated as separate doc (pages ${boundary.start_page}-${boundary.end_page})`
-        );
-      }
-    }
-  }
-
-  return [...groupMap.values()].sort((a, b) => a.start_page - b.start_page);
-};
-
 const runDocWithConcurrency = async (tasks, concurrency) => {
   for (let i = 0; i < tasks.length; i += concurrency) {
     const batch = tasks.slice(i, i + concurrency);
@@ -216,8 +185,7 @@ const handleProcessDocument = async (job) => {
       end_page: Math.min(b.end_page, totalPages),
     }));
 
-    const groupedBoundaries = groupBoundaries(normalized);
-    console.info(`[Worker] Boundaries: ${normalized.length} → grouped: ${groupedBoundaries.length}`);
+    console.info(`[Worker] Boundaries: ${normalized.length} doc(s) from Phase 1`);
 
     await job.updateProgress(30);
 
@@ -225,7 +193,7 @@ const handleProcessDocument = async (job) => {
     console.info(`[Worker] Splitting into ${normalized.length} document(s)...`);
 
     const splitStart = Date.now();
-    for (const boundary of groupedBoundaries) {
+    for (const boundary of normalized) {
       const { doc_code, vendor, start_page, end_page, confidence, needs_review } = boundary;
       const pageCount = end_page - start_page + 1;
 
@@ -447,7 +415,7 @@ const handleProcessDocument = async (job) => {
     await job.updateProgress(100);
     console.info(`[Worker] Job ${job.id} completed`);
 
-    return { sourceFileId, total: groupedBoundaries.length };
+    return { sourceFileId, total: normalized.length };
 
   } catch (err) {
     console.error(`[Worker] Fatal job ${job.id}: ${err.message}`);

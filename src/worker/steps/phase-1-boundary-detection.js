@@ -10,17 +10,30 @@ const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD);
 const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE);
 const CHUNK_OVERLAP = parseInt(process.env.CHUNK_OVERLAP);
 
-const DOC_TYPES = {
-  '380':'Invoice', '217':'Packing List', '001':'CIPL',
-  '705':'Bill of Lading', '706':'Sea Waybill', '740':'Air Way Bill', '860':'ECOO',
-  '861':'COO', '704':'Master Bill of Lading', '741':'Master AWB',
-  '958':'Lartas', '457':'SKB PPh', '800':'POSTEL', '813':'CK',
-  '846':'SKEM', '854':'BPOM', '871':'AKL', '888':'Pengecualian Perijinan',
-  '957':'SNI', '959':'PI', '999':'Lainnya', '000':'Cukai',
-};
+const TYPE_LIST = `
+380: Invoice — commercial invoice dengan seller/buyer/line items/total amount
+001: CIPL — combined invoice + packing list dalam 1 dokumen
+217: Packing List — dokumen packaging saja, tidak ada total amount/price per item
+705: Bill of Lading — dokumen pengangkutan laut, ada vessel name/port/container
+704: Master Bill of Lading — MBL, diterbitkan oleh shipping line (bukan forwarder)
+740: Air Way Bill — dokumen pengangkutan udara, ada flight number/airport
+741: Master AWB — MAWB diterbitkan maskapai
+860: ECOO — Certificate of Origin dengan form ECOO/ATIGA, ada FTA field
+861: COO — Certificate of Origin standar, bukan ECOO
+958: Lartas — Laporan Surveyor/PI dari surveyor (Sucofindo, Surveyor Indonesia)
+457: SKB PPh — Surat Keterangan Bebas Pajak
+800: POSTEL — Sertifikat POSTEL/SDPPI untuk elektronik
+813: CK — Dokumen Cukai tembakau/alkohol
+846: SKEM — Sertifikat SKEM hemat energi
+854: BPOM — Izin BPOM untuk makanan/kosmetik/obat
+871: AKL — Alat Kesehatan Dalam Negeri
+888: Pengecualian Perijinan — surat pengecualian perijinan
+957: SNI — Sertifikat SNI
+959: PI — Persetujuan Impor
+000: Cukai — dokumen cukai umum
+999: Lainnya — tidak teridentifikasi
+`.trim();
 
-const TYPE_LIST = Object.entries(DOC_TYPES)
-  .map(([code, name]) => `${code}: ${name}`).join('\n');
 
 // ── Detect boundaries untuk satu chunk PDF ────────────────────────────────
 const detectChunk = async (chunkPath, physicalStart) => {
@@ -149,6 +162,14 @@ const resolveOverlaps = (sorted) => {
   const result = [];
 
   for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (b && b.start_page <= a.end_page && a.invoice_number === b.invoice_number && a.doc_code !== b.doc_code) {
+      console.warn(
+        `[Phase1] SAME invoice ${a.invoice_number} detected as TWO different codes: ` +
+        `${a.doc_code} (p.${a.start_page}-${a.end_page}) vs ${b.doc_code} (p.${b.start_page}-${b.end_page})`
+      );
+    }
     const current = { ...sorted[i] };
 
     if (result.length === 0) {
