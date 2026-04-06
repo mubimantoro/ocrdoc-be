@@ -15,8 +15,14 @@ const loadSchema = async (schemaPath) => {
   try {
     const content = await readFile(path.resolve(schemaPath), 'utf-8');
     const raw = JSON.parse(content);
+
+    const topFields = raw.fields ?? [];
+    const invoiceFields = raw.invoice_list?.fields ?? [];
+
+    const allFields = [...new Set([...topFields, ...invoiceFields])];
+
     return {
-      fields: raw.fields ?? [],
+      fields: allFields,
       items:  raw.invoice_list?.items ?? raw.items ?? [],
     };
   } catch {
@@ -190,8 +196,8 @@ const extractDocument = async (docFilePath, schemaPath, docCode) => {
   const wallStart = Date.now();
   console.info(`[Phase2] Extracting: ${docFilePath} (type: ${docCode})`);
 
-  const schema     = await loadSchema(schemaPath);
-  const uploadDir  = path.dirname(docFilePath);
+  const schema = await loadSchema(schemaPath);
+  const uploadDir = path.dirname(docFilePath);
   const totalPages = await getPdfPageCount(docFilePath);
 
   console.info(`[Phase2] ${totalPages} page(s) — concurrency: ${CONCURRENCY}`);

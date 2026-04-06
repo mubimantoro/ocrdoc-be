@@ -1,3 +1,4 @@
+import { extractionQueue } from '../../../config/queue.js';
 import { InvariantError, NotFoundError } from '../../../exceptions/index.js';
 import response from '../../../utils/response.js';
 import DocumentRepositories from '../repositories/document-repositories.js';
@@ -68,5 +69,31 @@ export const getRawById = async (req, res, next) => {
     });
   } catch (error) {
     return next(error);
+  }
+};
+
+export const retryPendingReview = async (req, res, next) => {
+  try {
+    const doc = await DocumentRepositories.findById(req.params.id);
+
+    if (doc.status !== 'pending_review') {
+      return next(new InvariantError('Hanya dokumen dengan status pending_review yang bisa di-retry'));
+    }
+
+    const { jobId } = await DocumentRepositories.resetPendingReviewForExtraction(req.params.id);
+
+    await extractionQueue.add('retry-document', {
+      jobId,
+      documentId: doc.id,
+      filePath: doc.file_path,
+      schemaPath: `schemas/${doc.document_type?.code || '999'}.json`,
+      docCode: doc.document_type?.code || '999',
+      isRetry: false,
+    });
+
+    const updated = await DocumentRepositories.findById(req.params.id);
+    return response(res, 200, 'Dokumen berhasil dimasukkan ke antrian ekstraksi', updated);
+  } catch (err) {
+    next(err);
   }
 };
