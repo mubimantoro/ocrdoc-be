@@ -15,6 +15,7 @@ import { calculatePrice } from '../utils/token-pricing.js';
 const CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY);
 const UPLOAD_DIR  = process.env.UPLOAD_DIR || './uploads/temp';
 const DOC_CONCURRENCY = parseInt(process.env.QUEUE_DOC_CONCURRENCY);
+const MAX_DOC_PAGES = parseInt(process.env.MAX_DOC_PAGES);
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -106,7 +107,6 @@ const saveFields = async (client, resultId, fields) => {
 const saveItems = async (client, resultId, items) => {
   if (!items.length) return;
 
-  // Bulk insert items dulu
   const itemValues = items.map((_, i) => `($1, $${i + 2})`).join(', ');
   const itemParams = [resultId, ...items.map((item) => item.row_index)];
   const { rows: itemRows } = await client.query(
@@ -114,7 +114,6 @@ const saveItems = async (client, resultId, items) => {
     itemParams
   );
 
-  // Bulk insert item_fields
   const allColumns = items.flatMap((item, idx) =>
     (item.columns || []).map(({ key, value }) => ({ itemId: itemRows[idx].id, key, value }))
   );
@@ -134,8 +133,6 @@ const groupBoundaries = (boundaries) => {
   const groupMap = new Map();
 
   for (const boundary of boundaries) {
-    // Key: kombinasi doc_code + vendor + invoice_number
-    // Kalau invoice_number null, pakai start_page sebagai unique key
     const key = boundary.invoice_number
       ? `${boundary.doc_code}|${boundary.vendor ?? ''}|${boundary.invoice_number}`
       : `${boundary.doc_code}|${boundary.vendor ?? ''}|page_${boundary.start_page}`;
@@ -144,15 +141,22 @@ const groupBoundaries = (boundaries) => {
       groupMap.set(key, { ...boundary });
     } else {
       const existing = groupMap.get(key);
-      // Expand page range
-      existing.start_page = Math.min(existing.start_page, boundary.start_page);
-      existing.end_page   = Math.max(existing.end_page,   boundary.end_page);
-      // Ambil confidence terendah — lebih konservatif
-      existing.confidence = Math.min(existing.confidence, boundary.confidence);
+      const gap = boundary.start_page - existing.end_page;
+
+      if (gap <= 1) {
+        existing.start_page = Math.min(existing.start_page, boundary.start_page);
+        existing.end_page = Math.max(existing.end_page, boundary.end_page);
+        existing.confidence = Math.min(existing.confidence, boundary.confidence);
+      } else {
+        const uniqueKey = `${key}|page_${boundary.start_page}`;
+        groupMap.set(uniqueKey, { ...boundary });
+        console.warn(
+          `[Worker] Duplicate invoice ${boundary.invoice_number} — page gap: ${gap} — treated as separate doc (pages ${boundary.start_page}-${boundary.end_page})`
+        );
+      }
     }
   }
 
-  // Sort berdasarkan start_page
   return [...groupMap.values()].sort((a, b) => a.start_page - b.start_page);
 };
 
@@ -171,249 +175,12 @@ const worker = new Worker(
   'extraction',
 
   async (job) => {
-    const { sourceFileId, filePath } = job.data;
-    const jobStart = Date.now();
-    console.info(`[Worker] Start job ${job.id} — sourceFileId: ${sourceFileId}`);
-
-    try {
-      await updateSourceFile(sourceFileId, 'processing', 5);
-      await job.updateProgress(5);
-
-      // ── FASE 1: Cheap AI — Detect Boundaries ───────────────────────────
-      console.info('[Worker] Phase 1: boundary detection...');
-      const phase1Start = Date.now();
-      const totalPages = await getPdfPageCount(filePath);
-      const { boundaries, usage: phase1Usage } = await detectBoundaries(filePath);
-      const phase1Ms = Date.now() - phase1Start;
-      console.info(`[Timing] Phase 1: ${phase1Ms}ms`);
-      const phase1Pricing = calculatePrice(
-        process.env.GEMINI_CHEAP_MODEL ?? 'gemini-2.5-flash-lite',
-        phase1Usage?.prompt_tokens ?? 0,
-        phase1Usage?.output_tokens ?? 0,
-      );
-
-      const normalized = boundaries.map((b) => ({
-        ...b,
-        end_page: Math.min(b.end_page, totalPages),
-      }));
-
-      const groupedBoundaries = groupBoundaries(normalized);
-      console.info(`[Worker] Boundaries: ${normalized.length} → grouped: ${groupedBoundaries.length}`);
-
-      await job.updateProgress(30);
-
-      // ── Split PDF + Buat Document records ─────────────────────────────
-      console.info(`[Worker] Splitting into ${normalized.length} document(s)...`);
-
-      const splitStart = Date.now();
-      for (const boundary of groupedBoundaries) {
-        const { doc_code, vendor, start_page, end_page, confidence, needs_review } = boundary;
-
-        const docFilePath = await splitPdf(filePath, start_page, end_page, UPLOAD_DIR);
-        const vendorId = await findOrCreateVendor(vendor);
-        const docType = await getDocumentType(doc_code);
-
-        const { rows: docRows } = await pool.query(
-          `INSERT INTO documents
-     (source_file_id, vendor_id, document_type_id, file_path,
-      start_page, end_page, confidence, needs_review, status, invoice_number)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-          [sourceFileId, vendorId, docType.id, docFilePath,
-            start_page, end_page, confidence, needs_review,
-            needs_review ? 'pending_review' : 'queued',
-            boundary.invoice_number ?? null]
-        );
-        const documentId = docRows[0].id;
-
-        if (needs_review) {
-          console.warn(`[Worker] Document ${documentId} flagged for review (confidence: ${confidence})`);
-          continue;
-        }
-
-        await pool.query(
-          'INSERT INTO extraction_jobs (document_id, status) VALUES ($1, \'queued\')',
-          [documentId]
-        );
-      }
-      const splitMs = Date.now() - splitStart;
-      console.info(`[Timing] PDF split + DB insert documents: ${splitMs}ms`);
-
-      await updateSourceFile(sourceFileId, 'processing', 50);
-      await job.updateProgress(50);
-
-      // ── FASE 2: Smart AI — Extraction per dokumen ──────────────────────
-      const { rows: pendingJobs } = await pool.query(
-        `SELECT ej.id AS job_id, ej.document_id, d.file_path, dt.schema_path, dt.code AS doc_code
-        FROM extraction_jobs ej
-        JOIN documents d ON d.id  = ej.document_id
-        JOIN source_files sf ON sf.id = d.source_file_id
-        LEFT JOIN document_types dt ON dt.id = d.document_type_id
-        WHERE sf.id = $1 AND ej.status = 'queued'`,
-        [sourceFileId]
-      );
-
-      console.info(`[Worker] Phase 2: extracting ${pendingJobs.length} document(s) — doc concurrency: ${DOC_CONCURRENCY}`);
-
-      let completedCount = 0;
-      const phase2Start = Date.now();
-
-      const docTasks = pendingJobs.map(({ job_id, document_id, file_path, schema_path, doc_code }) => async () => {
-        const docStart = Date.now();
-        await updateJob(job_id, 'processing', 0);
-
-        try {
-          const { fields, items, parseError, usage, pricing } = await extractDocument(
-            file_path,
-            schema_path || 'schemas/999.json',
-            doc_code || '999'
-          );
-
-          const rawData = transformToRaw(doc_code || '999', fields, items);
-
-          const dbStart = Date.now();
-          const client = await pool.connect();
-          try {
-            await client.query('BEGIN');
-
-            const { rows: resultRows } = await client.query(
-              `INSERT INTO extraction_results
-              (extraction_job_id, ai_model,
-              prompt_tokens, output_tokens, total_tokens,
-              input_price, output_price, total_price,
-              total_pages, duration_ms, raw_data)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-              RETURNING id`,
-              [
-                job_id,
-                FLAGSHIP_MODEL,
-                usage?.prompt_tokens  ?? 0,
-                usage?.output_tokens  ?? 0,
-                usage?.total_tokens   ?? 0,
-                pricing?.input_price  ?? 0,
-                pricing?.output_price ?? 0,
-                pricing?.total_price  ?? 0,
-                usage?.total_pages    ?? 1,
-                usage?.wall_clock_ms  ?? 0,
-                JSON.stringify(rawData),
-              ]
-            );
-            const resultId = resultRows[0].id;
-
-            await saveFields(client, resultId, fields);
-            await saveItems(client, resultId, items);
-
-            const status = parseError ? 'failed' : 'completed';
-            await client.query(
-              'UPDATE extraction_jobs SET status=$1, progress=100, completed_at=now() WHERE id=$2',
-              [status, job_id]
-            );
-            await client.query(
-              'UPDATE documents SET status=$1 WHERE id=$2',
-              [status, document_id]
-            );
-
-            await client.query('COMMIT');
-            const docMs = Date.now() - docStart;
-            const dbMs  = Date.now() - dbStart;
-            console.info(`[Timing] Doc ${document_id}: total=${docMs}ms | ai=${usage?.wall_clock_ms ?? 0}ms | db=${dbMs}ms | pages=${usage?.total_pages} | status=${status}`);
-          } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-          } finally {
-            client.release();
-          }
-
-        } catch (err) {
-          console.error(`[Worker] Extraction failed doc ${document_id}: ${err.message}`);
-          await updateJob(job_id, 'failed', 0, err.message);
-          await pool.query(
-            'UPDATE documents SET status=\'failed\', error_message=$1 WHERE id=$2',
-            [err.message, document_id]
-          );
-        }
-
-        // ── Update progress setelah tiap dokumen selesai ───────────────
-        completedCount++;
-        const progress = 50 + Math.round((completedCount / pendingJobs.length) * 45);
-        await updateSourceFile(sourceFileId, 'processing', progress);
-        await job.updateProgress(progress);
-      });
-
-      await runDocWithConcurrency(docTasks, DOC_CONCURRENCY);
-
-      const phase2Ms  = Date.now() - phase2Start;
-      const totalMs   = Date.now() - jobStart;
-      console.info(`[Timing] Phase 2: ${phase2Ms}ms`);
-      console.info('[Timing] ─────────────────────────────────────────');
-      console.info(`[Timing] Phase 1 (boundary):     ${phase1Ms}ms (${((phase1Ms/totalMs)*100).toFixed(1)}%)`);
-      console.info(`[Timing] PDF split + DB docs:    ${splitMs}ms (${((splitMs/totalMs)*100).toFixed(1)}%)`);
-      console.info(`[Timing] Phase 2 (extraction):   ${phase2Ms}ms (${((phase2Ms/totalMs)*100).toFixed(1)}%)`);
-      console.info(`[Timing] Total job: ${totalMs}ms`);
-      console.info('[Timing] ─────────────────────────────────────────');
-
-      const { rows: jobPrices } = await pool.query(
-        `SELECT COALESCE(SUM(er.total_price), 0) AS smart_total
-        FROM extraction_results er
-        JOIN extraction_jobs ej ON ej.id = er.extraction_job_id
-        JOIN documents d ON d.id = ej.document_id
-        WHERE d.source_file_id = $1`,
-        [sourceFileId]
-      );
-
-      const smartTotalPrice = parseFloat(jobPrices[0].smart_total);
-      const cheapTotalPrice = phase1Pricing.total_price;
-      const grandTotal = parseFloat((smartTotalPrice + cheapTotalPrice).toFixed(8));
-
-      await pool.query('UPDATE source_files SET cheap_total_price = $1, flagship_total_price = $2, total_price = $3 WHERE id = $4',
-        [cheapTotalPrice, smartTotalPrice, grandTotal, sourceFileId]
-      );
-
-      console.info(`[Worker] Price summary — cheap: $${cheapTotalPrice} | smart: $${smartTotalPrice} | total: $${grandTotal}`);
-
-      await updateSourceFile(sourceFileId, 'completed', 100);
-
-
-      const webhookUrl = process.env.WEBHOOK_URL;
-      if (webhookUrl) {
-        const { rows: docs } = await pool.query(
-          `SELECT d.id, d.start_page, d.end_page, d.status, dt.code AS doc_code, dt.name AS doc_name,
-          v.name AS vendor_name
-          FROM documents d
-          LEFT JOIN document_types dt ON dt.id = d.document_type_id
-          LEFT JOIN vendors v ON v.id  = d.vendor_id
-          WHERE d.source_file_id = $1`,
-          [sourceFileId]
-        );
-
-        const { rows: deliveryRows } = await pool.query(
-          'INSERT INTO webhook_deliveries (source_file_id, url, status) VALUES ($1, $2, \'pending\') RETURNING id',
-          [sourceFileId, webhookUrl]
-        );
-
-        await webhookQueue.add('deliver-webhook', {
-          deliveryId: deliveryRows[0].id,
-          url: webhookUrl,
-          payload: {
-            event: 'source_file.completed',
-            source_file_id: sourceFileId,
-            documents: docs,
-            processed_at: new Date().toISOString(),
-          },
-        });
-
-        console.info(`[Worker] Webhook enqueued for sourceFileId: ${sourceFileId}`);
-      }
-
-      await job.updateProgress(100);
-      console.info(`[Worker] Job ${job.id} completed`);
-
-      return { sourceFileId, total: groupedBoundaries.length };
-
-    } catch (err) {
-      console.error(`[Worker] Fatal job ${job.id}: ${err.message}`);
-      await updateSourceFile(sourceFileId, 'failed', 0, err.message);
-      throw err;
+    if (job.name === 'retry-document') {
+      return handleRetryDocument(job);
     }
+
+    return handleProcessDocument(job);
+
   },
 
   {
@@ -421,6 +188,352 @@ const worker = new Worker(
     concurrency: CONCURRENCY,
   }
 );
+
+const handleProcessDocument = async (job) => {
+  const { sourceFileId, filePath } = job.data;
+  const jobStart = Date.now();
+  console.info(`[Worker] Start job ${job.id} — sourceFileId: ${sourceFileId}`);
+
+  try {
+    await updateSourceFile(sourceFileId, 'processing', 5);
+    await job.updateProgress(5);
+
+    // ── FASE 1: Cheap AI — Detect Boundaries ───────────────────────────
+    console.info('[Worker] Phase 1: boundary detection...');
+    const phase1Start = Date.now();
+    const totalPages = await getPdfPageCount(filePath);
+    const { boundaries, usage: phase1Usage } = await detectBoundaries(filePath);
+    const phase1Ms = Date.now() - phase1Start;
+    console.info(`[Timing] Phase 1: ${phase1Ms}ms`);
+    const phase1Pricing = calculatePrice(
+      process.env.GEMINI_CHEAP_MODEL ?? 'gemini-2.5-flash-lite',
+      phase1Usage?.prompt_tokens ?? 0,
+      phase1Usage?.output_tokens ?? 0,
+    );
+
+    const normalized = boundaries.map((b) => ({
+      ...b,
+      end_page: Math.min(b.end_page, totalPages),
+    }));
+
+    const groupedBoundaries = groupBoundaries(normalized);
+    console.info(`[Worker] Boundaries: ${normalized.length} → grouped: ${groupedBoundaries.length}`);
+
+    await job.updateProgress(30);
+
+    // ── Split PDF + Buat Document records ─────────────────────────────
+    console.info(`[Worker] Splitting into ${normalized.length} document(s)...`);
+
+    const splitStart = Date.now();
+    for (const boundary of groupedBoundaries) {
+      const { doc_code, vendor, start_page, end_page, confidence, needs_review } = boundary;
+      const pageCount = end_page - start_page + 1;
+
+      if (pageCount > MAX_DOC_PAGES) {
+        console.warn(
+          `[Worker] Doc invoice=${boundary.invoice_number} has ${pageCount} pages — exceeds MAX_DOC_PAGES (${MAX_DOC_PAGES}), flagging for review`
+        );
+        const docFilePath = await splitPdf(filePath, start_page, end_page, UPLOAD_DIR);
+        const vendorId = await findOrCreateVendor(vendor);
+        const docType = await getDocumentType(doc_code);
+
+        await pool.query(
+          `INSERT INTO documents
+             (source_file_id, vendor_id, document_type_id, file_path,
+              start_page, end_page, confidence, needs_review, status, invoice_number)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [sourceFileId, vendorId, docType.id, docFilePath,
+            start_page, end_page, confidence, true,
+            'pending_review', boundary.invoice_number ?? null]
+        );
+        continue;
+      }
+
+      const docFilePath = await splitPdf(filePath, start_page, end_page, UPLOAD_DIR);
+      const vendorId = await findOrCreateVendor(vendor);
+      const docType = await getDocumentType(doc_code);
+
+      const { rows: docRows } = await pool.query(
+        `INSERT INTO documents
+           (source_file_id, vendor_id, document_type_id, file_path,
+            start_page, end_page, confidence, needs_review, status, invoice_number)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [sourceFileId, vendorId, docType.id, docFilePath,
+          start_page, end_page, confidence, needs_review,
+          needs_review ? 'pending_review' : 'queued',
+          boundary.invoice_number ?? null]
+      );
+      const documentId = docRows[0].id;
+
+      if (needs_review) {
+        console.warn(`[Worker] Document ${documentId} flagged for review (confidence: ${confidence})`);
+        continue;
+      }
+
+      await pool.query(
+        'INSERT INTO extraction_jobs (document_id, status) VALUES ($1, \'queued\')',
+        [documentId]
+      );
+    }
+    const splitMs = Date.now() - splitStart;
+    console.info(`[Timing] PDF split + DB insert documents: ${splitMs}ms`);
+
+    await updateSourceFile(sourceFileId, 'processing', 50);
+    await job.updateProgress(50);
+
+    // ── FASE 2: Smart AI — Extraction per dokumen ──────────────────────
+    const { rows: pendingJobs } = await pool.query(
+      `SELECT ej.id AS job_id, ej.document_id, d.file_path, dt.schema_path, dt.code AS doc_code
+        FROM extraction_jobs ej
+        JOIN documents d ON d.id  = ej.document_id
+        JOIN source_files sf ON sf.id = d.source_file_id
+        LEFT JOIN document_types dt ON dt.id = d.document_type_id
+        WHERE sf.id = $1 AND ej.status = 'queued'`,
+      [sourceFileId]
+    );
+
+    console.info(`[Worker] Phase 2: extracting ${pendingJobs.length} document(s) — doc concurrency: ${DOC_CONCURRENCY}`);
+
+    let completedCount = 0;
+    const phase2Start = Date.now();
+
+    const docTasks = pendingJobs.map(({ job_id, document_id, file_path, schema_path, doc_code }) => async () => {
+      const docStart = Date.now();
+      await updateJob(job_id, 'processing', 0);
+
+      try {
+        const { fields, items, parseError, usage, pricing } = await extractDocument(
+          file_path,
+          schema_path || 'schemas/999.json',
+          doc_code || '999'
+        );
+
+        const rawData = transformToRaw(doc_code || '999', fields, items);
+
+        const dbStart = Date.now();
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+
+          const { rows: resultRows } = await client.query(
+            `INSERT INTO extraction_results
+              (extraction_job_id, ai_model,
+              prompt_tokens, output_tokens, total_tokens,
+              input_price, output_price, total_price,
+              total_pages, duration_ms, raw_data)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+              RETURNING id`,
+            [
+              job_id,
+              FLAGSHIP_MODEL,
+              usage?.prompt_tokens  ?? 0,
+              usage?.output_tokens  ?? 0,
+              usage?.total_tokens   ?? 0,
+              pricing?.input_price  ?? 0,
+              pricing?.output_price ?? 0,
+              pricing?.total_price  ?? 0,
+              usage?.total_pages    ?? 1,
+              usage?.wall_clock_ms  ?? 0,
+              JSON.stringify(rawData),
+            ]
+          );
+          const resultId = resultRows[0].id;
+
+          await saveFields(client, resultId, fields);
+          await saveItems(client, resultId, items);
+
+          const status = parseError ? 'failed' : 'completed';
+          await client.query(
+            'UPDATE extraction_jobs SET status=$1, progress=100, completed_at=now() WHERE id=$2',
+            [status, job_id]
+          );
+          await client.query(
+            'UPDATE documents SET status=$1 WHERE id=$2',
+            [status, document_id]
+          );
+
+          await client.query('COMMIT');
+          const docMs = Date.now() - docStart;
+          const dbMs  = Date.now() - dbStart;
+          console.info(`[Timing] Doc ${document_id}: total=${docMs}ms | ai=${usage?.wall_clock_ms ?? 0}ms | db=${dbMs}ms | pages=${usage?.total_pages} | status=${status}`);
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
+        }
+
+      } catch (err) {
+        console.error(`[Worker] Extraction failed doc ${document_id}: ${err.message}`);
+        await updateJob(job_id, 'failed', 0, err.message);
+        await pool.query(
+          'UPDATE documents SET status=\'failed\', error_message=$1 WHERE id=$2',
+          [err.message, document_id]
+        );
+      }
+
+      // ── Update progress setelah tiap dokumen selesai ───────────────
+      completedCount++;
+      const progress = 50 + Math.round((completedCount / pendingJobs.length) * 45);
+      await updateSourceFile(sourceFileId, 'processing', progress);
+      await job.updateProgress(progress);
+    });
+
+    await runDocWithConcurrency(docTasks, DOC_CONCURRENCY);
+
+    const phase2Ms  = Date.now() - phase2Start;
+    const totalMs   = Date.now() - jobStart;
+    console.info(`[Timing] Phase 2: ${phase2Ms}ms`);
+    console.info('[Timing] ─────────────────────────────────────────');
+    console.info(`[Timing] Phase 1 (boundary):     ${phase1Ms}ms (${((phase1Ms/totalMs)*100).toFixed(1)}%)`);
+    console.info(`[Timing] PDF split + DB docs:    ${splitMs}ms (${((splitMs/totalMs)*100).toFixed(1)}%)`);
+    console.info(`[Timing] Phase 2 (extraction):   ${phase2Ms}ms (${((phase2Ms/totalMs)*100).toFixed(1)}%)`);
+    console.info(`[Timing] Total job: ${totalMs}ms`);
+    console.info('[Timing] ─────────────────────────────────────────');
+
+    const { rows: jobPrices } = await pool.query(
+      `SELECT COALESCE(SUM(er.total_price), 0) AS smart_total
+        FROM extraction_results er
+        JOIN extraction_jobs ej ON ej.id = er.extraction_job_id
+        JOIN documents d ON d.id = ej.document_id
+        WHERE d.source_file_id = $1`,
+      [sourceFileId]
+    );
+
+    const smartTotalPrice = parseFloat(jobPrices[0].smart_total);
+    const cheapTotalPrice = phase1Pricing.total_price;
+    const grandTotal = parseFloat((smartTotalPrice + cheapTotalPrice).toFixed(8));
+
+    await pool.query('UPDATE source_files SET cheap_total_price = $1, flagship_total_price = $2, total_price = $3 WHERE id = $4',
+      [cheapTotalPrice, smartTotalPrice, grandTotal, sourceFileId]
+    );
+
+    console.info(`[Worker] Price summary — cheap: $${cheapTotalPrice} | smart: $${smartTotalPrice} | total: $${grandTotal}`);
+
+    await updateSourceFile(sourceFileId, 'completed', 100);
+
+
+    const webhookUrl = process.env.WEBHOOK_URL;
+    if (webhookUrl) {
+      const { rows: docs } = await pool.query(
+        `SELECT d.id, d.start_page, d.end_page, d.status, dt.code AS doc_code, dt.name AS doc_name,
+          v.name AS vendor_name
+          FROM documents d
+          LEFT JOIN document_types dt ON dt.id = d.document_type_id
+          LEFT JOIN vendors v ON v.id  = d.vendor_id
+          WHERE d.source_file_id = $1`,
+        [sourceFileId]
+      );
+
+      const { rows: deliveryRows } = await pool.query(
+        'INSERT INTO webhook_deliveries (source_file_id, url, status) VALUES ($1, $2, \'pending\') RETURNING id',
+        [sourceFileId, webhookUrl]
+      );
+
+      await webhookQueue.add('deliver-webhook', {
+        deliveryId: deliveryRows[0].id,
+        url: webhookUrl,
+        payload: {
+          event: 'source_file.completed',
+          source_file_id: sourceFileId,
+          documents: docs,
+          processed_at: new Date().toISOString(),
+        },
+      });
+
+      console.info(`[Worker] Webhook enqueued for sourceFileId: ${sourceFileId}`);
+    }
+
+    await job.updateProgress(100);
+    console.info(`[Worker] Job ${job.id} completed`);
+
+    return { sourceFileId, total: groupedBoundaries.length };
+
+  } catch (err) {
+    console.error(`[Worker] Fatal job ${job.id}: ${err.message}`);
+    await updateSourceFile(sourceFileId, 'failed', 0, err.message);
+    throw err;
+  }
+};
+
+// ── Handler untuk retry single document ───────────────────────────────────
+const handleRetryDocument = async (job) => {
+  const { jobId, documentId, filePath, schemaPath, docCode } = job.data;
+  console.info(`[Worker] Retry document ${documentId} — job ${jobId}`);
+
+  await updateJob(jobId, 'processing', 0);
+
+  try {
+    const { fields, items, parseError, usage, pricing } = await extractDocument(
+      filePath,
+      schemaPath || 'schemas/999.json',
+      docCode    || '999'
+    );
+
+    const rawData = transformToRaw(docCode || '999', fields, items);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: resultRows } = await client.query(
+        `INSERT INTO extraction_results
+        (extraction_job_id, ai_model,
+        prompt_tokens, output_tokens, total_tokens,
+        input_price, output_price, total_price,
+        total_pages, duration_ms, raw_data)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        RETURNING id`,
+        [
+          jobId,
+          FLAGSHIP_MODEL,
+          usage?.prompt_tokens  ?? 0,
+          usage?.output_tokens  ?? 0,
+          usage?.total_tokens   ?? 0,
+          pricing?.input_price  ?? 0,
+          pricing?.output_price ?? 0,
+          pricing?.total_price  ?? 0,
+          usage?.total_pages    ?? 1,
+          usage?.wall_clock_ms  ?? 0,
+          JSON.stringify(rawData),
+        ]
+      );
+      const resultId = resultRows[0].id;
+
+      await saveFields(client, resultId, fields);
+      await saveItems(client, resultId, items);
+
+      const status = parseError ? 'failed' : 'completed';
+      await client.query(
+        'UPDATE extraction_jobs SET status=$1, progress=100, completed_at=now() WHERE id=$2',
+        [status, jobId]
+      );
+      await client.query(
+        'UPDATE documents SET status=$1 WHERE id=$2',
+        [status, documentId]
+      );
+
+      await client.query('COMMIT');
+      console.info(`[Worker] Retry document ${documentId}: ${status}`);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+  } catch (err) {
+    console.error(`[Worker] Retry document ${documentId} failed: ${err.message}`);
+    await updateJob(jobId, 'failed', 0, err.message);
+    await pool.query(
+      'UPDATE documents SET status=\'failed\', error_message=$1 WHERE id=$2',
+      [err.message, documentId]
+    );
+    throw err;
+  }
+
+  return { documentId, jobId };
+};
 
 // ── Events ─────────────────────────────────────────────────────────────────
 worker.on('completed', (job, result) =>

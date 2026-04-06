@@ -42,9 +42,7 @@ class DocumentRepositories {
 
   async findById(id) {
     const { rows } = await pool.query(
-      `SELECT d.id, d.start_page, d.end_page, d.status,
-      d.confidence, d.needs_review, d.error_message,
-      d.created_at, d.updated_at,
+      `SELECT d.id, d.start_page, d.end_page, d.status, d.file_path, d.confidence, d.needs_review, d.error_message, d.created_at, d.updated_at,
       dt.id AS dt_id, dt.code AS dt_code, dt.name AS dt_name,
       v.id  AS vendor_id, v.name AS vendor_name,
       sf.id AS sf_id, sf.file_name AS sf_file_name,
@@ -106,7 +104,7 @@ class DocumentRepositories {
         doc.fields = fields;
         doc.items  = Array.from(itemsMap.values());
         doc.ai_usage = {
-          model:         result.ai_model,
+          model: result.ai_model,
           prompt_tokens: result.prompt_tokens,
           output_tokens: result.output_tokens,
           total_tokens:  result.total_tokens,
@@ -186,6 +184,37 @@ class DocumentRepositories {
 
   }
 
+  async resetPendingReviewForExtraction(id) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows } = await client.query(
+        `UPDATE documents
+       SET status='queued', needs_review=false, error_message=NULL
+       WHERE id=$1 AND status='pending_review'
+       RETURNING id, file_path, document_type_id`,
+        [id]
+      );
+
+      if (!rows.length) throw new NotFoundError('Document tidak ditemukan atau bukan pending_review');
+
+      const { rows: jobRows } = await client.query(
+        `INSERT INTO extraction_jobs (document_id, status)
+       VALUES ($1, 'queued') RETURNING id`,
+        [id]
+      );
+
+      await client.query('COMMIT');
+      return { documentId: id, jobId: jobRows[0].id };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   #mapRow(row) {
     const durationMs = row.started_at && row.completed_at
       ? new Date(row.completed_at) - new Date(row.started_at)
@@ -199,6 +228,7 @@ class DocumentRepositories {
       confidence: row.confidence,
       needs_review: row.needs_review,
       error_message: row.error_message,
+      file_path: row.file_path,
       created_at: row.created_at,
       updated_at: row.updated_at,
       job_id: row.job_id,
