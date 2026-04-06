@@ -4,6 +4,12 @@ import { readFile, unlink } from 'fs/promises';
 import ai, { FLAGSHIP_MODEL } from '../../config/gemini.js';
 import { getPdfPageCount, splitPdf } from '../../utils/pdf-helper.js';
 import { calculatePrice } from '../../utils/token-pricing.js';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+
 
 // ── Config concurrency
 const CONCURRENCY = parseInt(process.env.AI_PAGE_CONCURRENCY);
@@ -12,20 +18,31 @@ const BATCH_DELAY_MS = parseInt(process.env.AI_BATCH_DELAY_MS);
 
 // ── Load schema ────────────────────────────────────────────────────────────
 const loadSchema = async (schemaPath) => {
+  const fullPath = path.join(PROJECT_ROOT, schemaPath);
   try {
-    const content = await readFile(path.resolve(schemaPath), 'utf-8');
+    const content = await readFile(fullPath, 'utf-8');
     const raw = JSON.parse(content);
 
     const topFields = raw.fields ?? [];
-    const invoiceFields = raw.invoice_list?.fields ?? [];
+    const listKeys = ['invoice_list', 'pl_list', 'details_list'];
+    const subListFields = listKeys.flatMap((key) => raw[key]?.fields ?? []);
 
-    const allFields = [...new Set([...topFields, ...invoiceFields])];
+    const allFields = [...new Set([...topFields, ...subListFields])];
+    const itemSources = [
+      ...(raw.invoice_list?.items ?? []),
+      ...(raw.pl_list?.items ?? []),
+      ...(raw.details_list?.items ?? []),
+      ...(raw.items ?? []),
+      ...(raw.packs ?? []),
+      ...(raw.packaging ?? []),
+      ...(raw.containers ?? []),
+      ...(raw.banks ?? []),
+    ];
 
-    return {
-      fields: allFields,
-      items:  raw.invoice_list?.items ?? raw.items ?? [],
-    };
-  } catch {
+    const allItems = [...new Set(itemSources)];
+    return { fields: allFields, items: allItems };
+  } catch (err) {
+    console.error(`[Phase2] loadSchema FAILED — fullPath: "${fullPath}": ${err.message}`);
     return {
       fields: ['document_number', 'document_date', 'issuer', 'recipient', 'total_amount'],
       items:  ['no', 'description', 'quantity', 'unit', 'amount'],
