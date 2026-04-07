@@ -14,7 +14,7 @@ export const splitPdf = async (srcPath, startPage, endPage, outputDir) => {
   const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
   const newDoc = await PDFDocument.create();
 
-  const indexes   = Array.from(
+  const indexes = Array.from(
     { length: endPage - startPage + 1 },
     (_, i) => startPage - 1 + i
   );
