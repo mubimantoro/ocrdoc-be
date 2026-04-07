@@ -1,6 +1,6 @@
 
 /* eslint-disable camelcase */
-import { readFile } from 'fs/promises';
+import { readFile, unlink } from 'fs/promises';
 import path from 'path';
 import ai, { CHEAP_MODEL } from '../../config/gemini.js';
 import { getPdfPageCount, splitPdf } from '../../utils/pdf-helper.js';
@@ -11,72 +11,109 @@ const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE);
 const CHUNK_OVERLAP = parseInt(process.env.CHUNK_OVERLAP);
 
 const TYPE_LIST = `
-380: Invoice — commercial invoice dengan seller/buyer/line items/total amount
-001: CIPL — combined invoice + packing list dalam 1 dokumen
-217: Packing List — dokumen packaging saja, tidak ada total amount/price per item
-705: Bill of Lading — dokumen pengangkutan laut, ada vessel name/port/container
-704: Master Bill of Lading — MBL, diterbitkan oleh shipping line (bukan forwarder)
-740: Air Way Bill — dokumen pengangkutan udara, ada flight number/airport
-741: Master AWB — MAWB diterbitkan maskapai
-860: ECOO — Certificate of Origin dengan form ECOO/ATIGA, ada FTA field
-861: COO — Certificate of Origin standar, bukan ECOO
-958: Lartas — Laporan Surveyor/PI dari surveyor (Sucofindo, Surveyor Indonesia)
-457: SKB PPh — Surat Keterangan Bebas Pajak
-800: POSTEL — Sertifikat POSTEL/SDPPI untuk elektronik
-813: CK — Dokumen Cukai tembakau/alkohol
-846: SKEM — Sertifikat SKEM hemat energi
-854: BPOM — Izin BPOM untuk makanan/kosmetik/obat
-871: AKL — Alat Kesehatan Dalam Negeri
-888: Pengecualian Perijinan — surat pengecualian perijinan
-957: SNI — Sertifikat SNI
-959: PI — Persetujuan Impor
-000: Cukai — dokumen cukai umum
-999: Lainnya — tidak teridentifikasi
+380: Invoice — commercial invoice; ada kolom unit price/amount, seller name, buyer name, total amount, payment terms
+001: CIPL — gabungan invoice + packing list dalam 1 dokumen; ada line items dengan price DAN packaging dimension/weight sekaligus
+217: Packing List — hanya packaging; TIDAK ADA unit price per item maupun total invoice amount
+705: Bill of Lading — HOUSE B/L atau Sea Waybill dari freight forwarder; moda transportasi LAUT; ada vessel name, voyage number, port of loading/discharge, container number; shipper = actual exporter
+704: Master Bill of Lading — MBL atau Sea Waybill (SWB/Non-Negotiable Waybill) diterbitkan langsung oleh SHIPPING LINE (Maersk, MSC, Evergreen, COSCO, WAN HAI, dll); header bertuliskan nama shipping line atau SCAC code mereka (MAEU=Maersk, MSCU=MSC, dll); ada vessel name, voyage, container; PENTING: meski header bertuliskan "WAYBILL" atau "NON-NEGOTIABLE WAYBILL", jika moda transportasi adalah LAUT (ada vessel/voyage/container/port) maka kode WAJIB 704 atau 705, BUKAN 740/741
+740: Air Way Bill — HAWB dari freight forwarder/agent; shipper = actual exporter; nomor AWB format agent (tanpa airline prefix 3 digit)
+741: Master AWB — MAWB diterbitkan langsung oleh MASKAPAI PENERBANGAN (Garuda, Lion Air, Singapore Airlines, dll); moda transportasi UDARA; CIRI KHAS: nomor format "XXX-XXXXXXXX" (3 digit airline code + 8 digit, contoh: "126-12345678"); TIDAK ADA vessel name atau container number
+860: ECOO — Certificate of Origin form ATIGA/ECOO; ada kolom "Preference Criterion" atau label "FTA"; diterbitkan lembaga penerbit COO
+861: COO — Certificate of Origin standar non-FTA; ada official stamp/tanda tangan otoritas; tidak ada kolom FTA/ATIGA
+958: Lartas — Laporan Surveyor (LS) dari lembaga survei RESMI (Sucofindo, Surveyor Indonesia, PT SCCI); header "LAPORAN SURVEYOR" atau "LS"; ada ls_number/vo_number, data importir, hs_code per item, tanda tangan surveyor
+457: SKB PPh — Surat Keterangan Bebas Pajak Penghasilan; kop surat Dirjen Pajak / KPP
+800: POSTEL — Sertifikat SDPPI/POSTEL untuk perangkat telekomunikasi/elektronik; ada nomor sertifikat SDPPI
+813: CK — Dokumen Cukai; ada pita cukai; kop surat DJBC
+846: SKEM — Sertifikat Kesesuaian Efisiensi Energi; ada logo ESDM/BSN
+854: BPOM — Izin edar BPOM; ada nomor izin format "BPOM RI MD/ML/TR/SD"
+871: AKL — Alat Kesehatan Dalam Negeri; ada nomor AKL Kemenkes
+888: AKD — Alat Kesehatan Dalam Negeri variant; ada nomor AKD Kemenkes
+957: SNI — Sertifikat SNI; ada nomor SNI dan logo BSN
+959: PI — Persetujuan Impor dari Kementerian Perdagangan/BKPM; header "PERSETUJUAN IMPOR"; BUKAN dari lembaga survei
+000: Cukai — Dokumen pita cukai/DJBC lainnya
+999: Lainnya — tidak dapat diidentifikasi dengan kode di atas
+`.trim();
+
+const DISAMBIGUATION_RULES = `
+CRITICAL DISAMBIGUATION — baca sebelum mengklasifikasikan:
+
+1. AWB (740) vs Master AWB (741):
+   - Nomor format "3digit-8digit" (contoh: "126-12345678", "618-87654321") → WAJIB kode 741
+   - Shipper di dokumen adalah freight forwarder / NVOCC → kode 741
+   - Header / letterhead adalah nama maskapai (Garuda, Lion Air, Singapore Airlines, dll) → kode 741
+   - Selain kondisi di atas → kode 740
+
+2. Lartas (958) vs PI (959):
+   - Diterbitkan oleh Sucofindo, Surveyor Indonesia, atau PT SCCI; ada header "LAPORAN SURVEYOR" atau nomor "LS-XXXX" → WAJIB kode 958
+   - Diterbitkan oleh Kementerian Perdagangan / BKPM; header "PERSETUJUAN IMPOR" → kode 959
+
+3. Bill of Lading (705) vs Master BL (704):
+   - Shipper = freight forwarder / NVOCC (bukan exporter asli) → kode 704
+   - Shipper = exporter asli → kode 705
+
+4. CIPL (001) vs Invoice (380) vs Packing List (217):
+   - Ada BOTH unit price AND packaging dimension per item → kode 001
+   - Ada unit price, tidak ada packaging data → kode 380
+   - Ada packaging data, tidak ada unit price → kode 217
 `.trim();
 
 
-// ── Detect boundaries untuk satu chunk PDF ────────────────────────────────
-const detectChunk = async (chunkPath, physicalStart) => {
-  const pdfBuffer = await readFile(chunkPath);
-  const base64Pdf = pdfBuffer.toString('base64');
-
-  const prompt = `You are analyzing a PDF document for a freight forwarding company.
+const buildDetectPrompt = (chunkPageCount) => `
+You are analyzing a PDF document for a freight forwarding company.
 This PDF may contain multiple separate logical documents combined into one file.
 
-Your task:
+Your tasks:
 1. Identify each separate logical document in this PDF
-2. Determine the page range for each document
-3. Identify the document type using the codes below
-4. Identify the vendor/company name if visible
-5. Extract the invoice/document number if visible
-6. Provide a confidence score (0.0 - 1.0) for each detection
+2. Determine the page range for each document (1-based, relative to THIS chunk only)
+3. Classify the document type using the codes listed below
+4. Extract the vendor/company name if visible
+5. Extract the primary document number (invoice number, AWB number, LS number, B/L number, etc.)
+6. Assign a confidence score (0.0 – 1.0) for each detection
 
-Available document type codes:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DOCUMENT TYPE CODES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${TYPE_LIST}
 
-Rules:
-- Pages are 1-based and relative to THIS chunk only
-- A document starts when you see a new document header or title
-- Different vendors = different document instances even if same type
-- IMPORTANT: Pages with the SAME vendor AND the SAME invoice/document number MUST be grouped as ONE document
-- Do NOT create separate entries for continuation pages of the same invoice/document
-- Continuation pages usually have: no new invoice number, continued table rows, same header info
-- Confidence < ${CONFIDENCE_THRESHOLD} means uncertain boundary
-- If you can see ANY content on the page, you MUST return at least one document entry
-- If document type is uncertain, use code 999
-- NEVER return empty documents array if pages contain visible content
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${DISAMBIGUATION_RULES}
 
-PAGE RANGE INTEGRITY RULES (CRITICAL):
-- Each page can only belong to ONE document — page ranges must NEVER overlap
-- CRITICAL ANTI-DRIFT: You MUST account for EVERY SINGLE PAGE in this chunk. Do not skip any pages visually. Count the pages sequentially.
-- If a document spans pages 2 to 4, and the next starts at 5, explicitly list them. Do not jump page numbers arbitrarily.
-- Example INVALID: doc A pages 1-5, doc B pages 4-7 (pages 4-5 overlap)
-- Example VALID:  doc A pages 1-5, doc B pages 6-9 (no overlap)
-- If a new document header appears mid-page, assign the new document starting from the NEXT page
-- If you are uncertain where a document ends, extend it until the next clear document header
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DOCUMENT NUMBER EXTRACTION RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Always populate "invoice_number" with the document's PRIMARY identifier:
+- Invoice (380/001)  → invoice number
+- AWB (740/741)      → AWB number (e.g. "126-12345678")
+- BL (705/704)       → B/L number
+- Lartas (958)       → LS number or PI number
+- Certificates       → certificate number
+- Unknown            → null
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GENERAL RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Page numbers are 1-based and relative to THIS chunk only (chunk has ${chunkPageCount} page(s))
+- A document boundary starts when you see a NEW document header or title
+- Different vendors = different document instances even if same type
+- Pages with the SAME vendor AND the SAME document number MUST be grouped as ONE document
+- Continuation pages (no new header, continued table rows, same header info) belong to the PREVIOUS document
+- If document type is uncertain, use code 999
+- If you can see ANY content on a page, you MUST return at least one document entry
+- Confidence < ${CONFIDENCE_THRESHOLD} = uncertain boundary
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PAGE RANGE INTEGRITY (CRITICAL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Every page MUST belong to exactly ONE document — ranges must NEVER overlap
+- You MUST account for EVERY page in this chunk sequentially — do not skip pages
+- INVALID example: doc A pages 1–5, doc B pages 4–7   (pages 4–5 overlap)
+- VALID example:   doc A pages 1–5, doc B pages 6–9   (no overlap)
+- If a new document header appears mid-page, start the new document at the NEXT page
+- If uncertain where a document ends, extend it until the next clear document header
 - NEVER assign the same start_page to two different documents
 
-Return ONLY valid JSON, no explanation:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESPONSE FORMAT — Return ONLY valid JSON, no explanation:
 {
   "documents": [
     {
@@ -88,13 +125,47 @@ Return ONLY valid JSON, no explanation:
       "confidence": 0.95
     }
   ]
-}`;
+}
+`.trim();
+
+// ── Gemini Caller ─────────────────────────────────────────────────────────────
+
+/**
+ * Fallback document used whenever a chunk returns 0 docs or fails to parse.
+ * Marked needs_review so it always gets routed to manual queue.
+ *
+ * @param {number} startPage
+ * @param {number} endPage
+ * @returns {Object}
+ */
+const makeFallbackDoc = (startPage, endPage) => ({
+  doc_code:       '999',
+  vendor:         null,
+  invoice_number: null,
+  start_page:     startPage,
+  end_page:       endPage,
+  confidence:     0,
+  needs_review:   true,
+});
+
+/**
+ * Calls Gemini to detect document boundaries in a single PDF chunk.
+ *
+ * @param {string} chunkPath     - Absolute path to the temporary chunk PDF
+ * @param {number} physicalStart - First physical page of this chunk in the full PDF (1-based)
+ * @param {number} physicalEnd   - Last physical page of this chunk in the full PDF (1-based)
+ * @returns {Promise<{ documents: Object[], usage: Object }>}
+ */
+const detectChunk = async (chunkPath, physicalStart, physicalEnd) => {
+  const chunkPageCount = physicalEnd - physicalStart + 1;
+  const pdfBuffer      = await readFile(chunkPath);
+  const base64Pdf      = pdfBuffer.toString('base64');
 
   const response = await ai.models.generateContent({
-    model: CHEAP_MODEL,
+    model:    CHEAP_MODEL,
     contents: [{
       parts: [
-        { text: prompt },
+        { text: buildDetectPrompt(chunkPageCount) },
         { inlineData: { mimeType: 'application/pdf', data: base64Pdf } },
       ],
     }],
@@ -107,70 +178,78 @@ Return ONLY valid JSON, no explanation:
     total_tokens:  response.usageMetadata?.totalTokenCount      ?? 0,
   };
 
-  const jsonMatch = response.text.match(/\{[\s\S]*\}/);
-  const rawText   = jsonMatch ? jsonMatch[0].trim() : '{}';
+  const jsonMatch = response.text?.match(/\{[\s\S]*\}/);
+  const rawText = jsonMatch ? jsonMatch[0].trim() : '{}';
 
+  let documents;
   try {
-    const parsed    = JSON.parse(rawText);
-    const documents = parsed.documents || [];
-
-    if (documents.length === 0) {
-      console.warn(`[Phase1] Chunk offset ${physicalStart}: 0 docs detected — fallback to needs_review`);
-      return {
-        documents: [{
-          doc_code:'999',
-          vendor: null,
-          invoice_number: null,
-          start_page: physicalStart,
-          end_page: physicalStart + CHUNK_SIZE - 1,
-          confidence: 0,
-          needs_review:   true,
-        }],
-        usage,
-      };
-    }
-
-    return {
-      documents: documents.map((doc) => ({
-        ...doc,
-        invoice_number: doc.invoice_number ?? null,
-        start_page:     doc.start_page + physicalStart - 1,
-        end_page:       doc.end_page   + physicalStart - 1,
-        needs_review:   doc.confidence < CONFIDENCE_THRESHOLD,
-      })),
-      usage,
-    };
-  } catch (e) {
-    console.error(`[Phase1] Chunk parse failed (offset ${physicalStart}): ${e.message}`);
-    return {
-      documents: [{
-        doc_code:       '999',
-        vendor:         null,
-        invoice_number: null,
-        start_page:     physicalStart,
-        end_page:       physicalStart + CHUNK_SIZE - 1,
-        confidence:     0,
-        needs_review:   true,
-      }],
-      usage,
-    };
+    const parsed = JSON.parse(rawText);
+    documents    = Array.isArray(parsed.documents) ? parsed.documents : [];
+  } catch (err) {
+    console.error(
+      `[Phase1] JSON parse failed (chunk physical ${physicalStart}–${physicalEnd}): ${err.message}`
+    );
+    return { documents: [makeFallbackDoc(physicalStart, physicalEnd)], usage };
   }
+
+  if (documents.length === 0) {
+    console.warn(
+      `[Phase1] 0 docs detected in chunk physical ${physicalStart}–${physicalEnd} — fallback to needs_review`
+    );
+    return { documents: [makeFallbackDoc(physicalStart, physicalEnd)], usage };
+  }
+
+  // Re-map chunk-relative pages → absolute pages in the full PDF
+  const mapped = documents.map((doc) => ({
+    doc_code:       String(doc.doc_code ?? '999'),
+    vendor:         doc.vendor         ?? null,
+    invoice_number: doc.invoice_number ?? null,
+    start_page:     doc.start_page + physicalStart - 1,
+    end_page:       doc.end_page   + physicalStart - 1,
+    confidence:     doc.confidence ?? 0,
+    needs_review:   (doc.confidence ?? 0) < CONFIDENCE_THRESHOLD,
+  }));
+
+  return { documents: mapped, usage };
 };
 
-// ── Resolve overlapping boundaries setelah grouping ───────────────────────
+// ── Post-processing ───────────────────────────────────────────────────────────
+
+/**
+ * Resolves overlap/drift between adjacent document boundaries produced by the
+ * AI across chunk boundaries.
+ *
+ * Strategy:
+ *  - Fully contained duplicates (same invoice) → skip
+ *  - Partial overlap (index drift) → flag BOTH for manual review, keep as-is
+ *    (do NOT blindly truncate — it risks losing line items)
+ *  - Same invoice_number detected as two different doc_codes → warn but keep both
+ *    (human reviewer will consolidate)
+ *
+ * @param {Object[]} sorted - Documents sorted by start_page ascending
+ * @returns {Object[]}
+ */
 const resolveOverlaps = (sorted) => {
   const result = [];
 
   for (let i = 0; i < sorted.length; i++) {
-    const a = sorted[i];
-    const b = sorted[i + 1];
-    if (b && b.start_page <= a.end_page && a.invoice_number === b.invoice_number && a.doc_code !== b.doc_code) {
+    const current = { ...sorted[i] };
+    const next    = sorted[i + 1];
+
+    // Warn: same invoice number but two different doc_codes in adjacent entries
+    if (
+      next &&
+      next.start_page <= current.end_page &&
+      current.invoice_number !== null &&
+      current.invoice_number === next.invoice_number &&
+      current.doc_code !== next.doc_code
+    ) {
       console.warn(
-        `[Phase1] SAME invoice ${a.invoice_number} detected as TWO different codes: ` +
-        `${a.doc_code} (p.${a.start_page}-${a.end_page}) vs ${b.doc_code} (p.${b.start_page}-${b.end_page})`
+        `[Phase1] Same invoice "${current.invoice_number}" detected as two codes: ` +
+        `${current.doc_code} (p.${current.start_page}–${current.end_page}) ` +
+        `vs ${next.doc_code} (p.${next.start_page}–${next.end_page})`
       );
     }
-    const current = { ...sorted[i] };
 
     if (result.length === 0) {
       result.push(current);
@@ -179,26 +258,27 @@ const resolveOverlaps = (sorted) => {
 
     const prev = result[result.length - 1];
 
-    // Jika terjadi overlap halaman
     if (current.start_page <= prev.end_page) {
-      // Kasus 1: Fully contained (Duplikat identik di invoice yang sama)
-      if (current.end_page <= prev.end_page && current.invoice_number === prev.invoice_number) {
-        console.warn(`[Phase1] Skip fully contained duplicate: invoice=${current.invoice_number}`);
+      // Case 1: Fully contained duplicate with same invoice → discard silently
+      if (
+        current.end_page <= prev.end_page &&
+        current.invoice_number !== null &&
+        current.invoice_number === prev.invoice_number
+      ) {
+        console.warn(
+          `[Phase1] Skipping fully-contained duplicate: invoice="${current.invoice_number}"`
+        );
         continue;
       }
 
-      // Kasus 2: Partial overlap akibat Index Drift AI
-      // JANGAN memotong start_page! Memotong halaman secara buta akan menghilangkan data items.
-      // Biarkan halamannya overlap (splitPdf akan mengekstrak halaman yang sama untuk 2 dokumen berbeda),
-      // TAPI kita paksa sistem untuk melemparnya ke Manual Review agar diverifikasi manusia.
+      // Case 2: Partial overlap (AI index drift across chunk boundary)
+      // Flag both for manual review — do NOT silently truncate page ranges
       console.warn(
-        `[Phase1] OVERLAP DRIFT DETECTED: prev(${prev.invoice_number} p.${prev.start_page}-${prev.end_page}) ` +
-        `vs current(${current.invoice_number} p.${current.start_page}-${current.end_page}). Flagging both for review.`
+        `[Phase1] Overlap drift: prev("${prev.invoice_number}" p.${prev.start_page}–${prev.end_page}) ` +
+        `vs current("${current.invoice_number}" p.${current.start_page}–${current.end_page}) — flagging both`
       );
-
       current.needs_review = true;
-
-      prev.needs_review = true;
+      prev.needs_review    = true;
     }
 
     result.push(current);
@@ -207,110 +287,184 @@ const resolveOverlaps = (sorted) => {
   return result;
 };
 
-// ── Main export ────────────────────────────────────────────────────────────
-const detectBoundaries = async (filePath) => {
-  console.info(`[Phase1] Detecting boundaries: ${filePath}`);
+// ── Chunk Orchestrator ────────────────────────────────────────────────────────
 
-  const pdfBuffer  = await readFile(filePath);
-  const sizeMB     = (pdfBuffer.length / 1024 / 1024).toFixed(2);
-  const totalPages = await getPdfPageCount(filePath);
+/**
+ * Splits a PDF into overlapping chunks and returns metadata for each chunk.
+ * Overlap allows the AI to see context from the previous chunk's trailing pages,
+ * reducing boundary drift at chunk edges.
+ *
+ * @param {string} filePath    - Absolute path to the source PDF
+ * @param {number} totalPages  - Total page count of the source PDF
+ * @param {string} uploadDir   - Directory where temp chunk files are written
+ * @returns {Promise<Array<{ chunkPath, physicalStart, physicalEnd, logicalStart, logicalEnd }>>}
+ */
+const buildChunks = async (filePath, totalPages, uploadDir) => {
+  const chunks = [];
 
-  console.info(
-    `[Phase1] File size: ${sizeMB}MB — ${totalPages} pages — ` +
-    `chunk size: ${CHUNK_SIZE} overlap: ${CHUNK_OVERLAP}`
+  for (let logicalStart = 1; logicalStart <= totalPages; logicalStart += CHUNK_SIZE) {
+    const logicalEnd    = Math.min(logicalStart + CHUNK_SIZE - 1, totalPages);
+    const physicalStart = logicalStart === 1 ? 1 : Math.max(1, logicalStart - CHUNK_OVERLAP);
+    const physicalEnd   = logicalEnd;
+    const chunkPath     = await splitPdf(filePath, physicalStart, physicalEnd, uploadDir);
+
+    chunks.push({ chunkPath, physicalStart, physicalEnd, logicalStart, logicalEnd });
+  }
+
+  return chunks;
+};
+
+/**
+ * Processes all chunks in parallel and accumulates raw document results.
+ *
+ * @param {Array}  chunks
+ * @returns {Promise<{ allDocs: Object[], totalUsage: Object }>}
+ */
+const runChunks = async (chunks) => {
+  const totalUsage = { prompt_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  const allDocs    = [];
+
+  const results = await Promise.all(
+    chunks.map(async ({ chunkPath, physicalStart, physicalEnd, logicalStart, logicalEnd }) => {
+      console.info(
+        `[Phase1] Chunk logical ${logicalStart}–${logicalEnd} ` +
+        `(physical ${physicalStart}–${physicalEnd})...`
+      );
+      const t0                    = Date.now();
+      const { documents, usage }  = await detectChunk(chunkPath, physicalStart, physicalEnd);
+      console.info(
+        `[Phase1] Chunk ${logicalStart}–${logicalEnd}: ` +
+        `${documents.length} doc(s) — ${Date.now() - t0}ms`
+      );
+      return { documents, usage };
+    })
   );
 
-  const uploadDir = path.dirname(filePath);
-  const allDocs   = [];
-  const chunks    = [];
-
-  // ── Buat chunk PDF dengan overlap ────────────────────────────────────────
-  for (let logicalStart = 1; logicalStart <= totalPages; logicalStart += CHUNK_SIZE) {
-    const end           = Math.min(logicalStart + CHUNK_SIZE - 1, totalPages);
-    const physicalStart = logicalStart === 1 ? 1 : Math.max(1, logicalStart - CHUNK_OVERLAP);
-    const chunkPath     = await splitPdf(filePath, physicalStart, end, uploadDir);
-    chunks.push({ chunkPath, physicalStart, logicalStart, end });
+  for (const { documents, usage } of results) {
+    allDocs.push(...documents);
+    totalUsage.prompt_tokens += usage.prompt_tokens;
+    totalUsage.output_tokens += usage.output_tokens;
+    totalUsage.total_tokens  += usage.total_tokens;
   }
 
-  console.info(`[Phase1] Processing ${chunks.length} chunk(s)...`);
+  return { allDocs, totalUsage };
+};
 
-  const totalUsage = { prompt_tokens: 0, output_tokens: 0, total_tokens: 0 };
+// ── Grouping & Dedup ──────────────────────────────────────────────────────────
 
-  try {
-    // ── Proses semua chunk secara parallel ───────────────────────────────
-    const chunkResults = await Promise.all(
-      chunks.map(async ({ chunkPath, physicalStart, logicalStart, end }) => {
-        console.info(
-          `[Phase1] Chunk pages ${logicalStart}-${end} (physical: ${physicalStart}-${end})...`
-        );
-        const chunkStart = Date.now();
-        const { documents, usage } = await detectChunk(chunkPath, physicalStart);
-
-        console.info(
-          `[Phase1] Chunk ${logicalStart}-${end}: found ${documents.length} doc(s) — ` +
-      `${Date.now() - chunkStart}ms`
-        );
-        return { documents, usage };
-      })
-    );
-
-    for (const { documents, usage } of chunkResults) {
-      allDocs.push(...documents);
-      totalUsage.prompt_tokens += usage.prompt_tokens;
-      totalUsage.output_tokens += usage.output_tokens;
-      totalUsage.total_tokens  += usage.total_tokens;
-    }
-  } finally {
-    await Promise.all(
-      chunks.map(({ chunkPath }) =>
-        import('fs/promises').then(({ unlink }) => unlink(chunkPath).catch(() => {}))
-      )
-    );
-  }
-
+/**
+ * Groups raw documents from all chunks by their logical identity:
+ *   (doc_code, vendor, invoice_number)
+ *
+ * Documents that overlap chunk boundaries produce duplicate entries that need
+ * merging. A duplicate is valid for merging ONLY if the page gap is ≤ 1
+ * (i.e., the two entries are directly adjacent or overlapping due to the
+ * CHUNK_OVERLAP window). Larger gaps mean the same invoice number reappears in
+ * a different physical shipment — treat as a separate document.
+ *
+ * @param {Object[]} allDocs - Flat array of documents from all chunks
+ * @returns {Object[]} Sorted, grouped, overlap-resolved document list
+ */
+const groupAndDedup = (allDocs) => {
   const groupMap = new Map();
 
   for (const doc of allDocs) {
+    // Use invoice_number as part of key so that the same doc_code + vendor
+    // with a different document number is always treated as a separate document.
+    // Fall back to start_page to guarantee uniqueness for unknown-number docs.
     const key = doc.invoice_number
       ? `${doc.doc_code}|${doc.vendor ?? ''}|${doc.invoice_number}`
       : `${doc.doc_code}|${doc.vendor ?? ''}|page_${doc.start_page}`;
 
     if (!groupMap.has(key)) {
       groupMap.set(key, { ...doc });
-    } else {
-      const existing = groupMap.get(key);
-      const gap      = doc.start_page - existing.end_page;
+      continue;
+    }
 
-      if (gap <= 1) {
-        existing.start_page = Math.min(existing.start_page, doc.start_page);
-        existing.end_page   = Math.max(existing.end_page,   doc.end_page);
-        existing.confidence = Math.min(existing.confidence, doc.confidence);
-      } else {
-        // Gap terlalu jauh — invoice sama tapi dokumen berbeda
-        const uniqueKey = `${key}|page_${doc.start_page}`;
-        groupMap.set(uniqueKey, { ...doc });
-        console.warn(
-          `[Phase1] Duplicate invoice ${doc.invoice_number} with page gap ${gap} — treated as separate doc`
-        );
-      }
+    const existing = groupMap.get(key);
+    const pageGap  = doc.start_page - existing.end_page;
+
+    if (pageGap <= 1) {
+      // Merge: extend the page range, keep the lower confidence score
+      existing.start_page = Math.min(existing.start_page, doc.start_page);
+      existing.end_page   = Math.max(existing.end_page,   doc.end_page);
+      existing.confidence = Math.min(existing.confidence, doc.confidence);
+      // Propagate review flag if either side needs it
+      existing.needs_review = existing.needs_review || doc.needs_review;
+    } else {
+      // Same identity but too far apart — treat as a distinct document
+      const uniqueKey = `${key}|page_${doc.start_page}`;
+      groupMap.set(uniqueKey, { ...doc });
+      console.warn(
+        `[Phase1] Same invoice "${doc.invoice_number}" reappears with page gap ${pageGap} — ` +
+        'treating as separate document'
+      );
     }
   }
 
-  // ── Sort → resolve overlaps → final result ───────────────────────────────
   const sorted = [...groupMap.values()].sort((a, b) => a.start_page - b.start_page);
-  const result = resolveOverlaps(sorted);
+  return resolveOverlaps(sorted);
+};
+
+// ── Main Export ───────────────────────────────────────────────────────────────
+
+/**
+ * detectBoundaries — Phase 1 entry point.
+ *
+ * Orchestrates the full boundary detection pipeline:
+ *   1. Build overlapping PDF chunks
+ *   2. Run Gemini detection on all chunks in parallel
+ *   3. Clean up temp chunk files (always, even on failure)
+ *   4. Group + dedup + resolve overlaps
+ *   5. Return structured boundary list + token usage
+ *
+ * @param {string} filePath - Absolute path to the source PDF
+ * @returns {Promise<{ boundaries: Object[], usage: Object }>}
+ */
+const detectBoundaries = async (filePath) => {
+  const uploadDir  = path.dirname(filePath);
+  const pdfBuffer  = await readFile(filePath);
+  const sizeMB     = (pdfBuffer.length / 1024 / 1024).toFixed(2);
+  const totalPages = await getPdfPageCount(filePath);
 
   console.info(
-    `[Phase1] Total: ${allDocs.length} raw → ${sorted.length} grouped → ${result.length} after overlap resolve`
-  );
-  result.forEach((d, i) =>
-    console.info(
-      `  [${i + 1}] code=${d.doc_code} invoice=${d.invoice_number} ` +
-      `pages=${d.start_page}-${d.end_page} confidence=${d.confidence} review=${d.needs_review}`
-    )
+    `[Phase1] Starting boundary detection: ${path.basename(filePath)} ` +
+    `(${sizeMB}MB, ${totalPages} pages, chunk=${CHUNK_SIZE}, overlap=${CHUNK_OVERLAP})`
   );
 
-  return { boundaries: result, usage: totalUsage };
+  const chunks = await buildChunks(filePath, totalPages, uploadDir);
+  console.info(`[Phase1] ${chunks.length} chunk(s) created — running parallel detection...`);
+
+  let allDocs;
+  let totalUsage;
+
+  try {
+    ({ allDocs, totalUsage } = await runChunks(chunks));
+  } finally {
+    await Promise.allSettled(
+      chunks.map(({ chunkPath }) => unlink(chunkPath))
+    );
+  }
+
+  const boundaries = groupAndDedup(allDocs);
+
+  // ── Summary log ────────────────────────────────────────────────────────────
+  console.info(
+    `[Phase1] Done: ${allDocs.length} raw → ${boundaries.length} final ` +
+    `| tokens: ${totalUsage.total_tokens} ` +
+    `(prompt: ${totalUsage.prompt_tokens}, output: ${totalUsage.output_tokens})`
+  );
+  boundaries.forEach((doc, idx) => {
+    const reviewFlag = doc.needs_review ? ' ⚠ REVIEW' : '';
+    console.info(
+      `  [${String(idx + 1).padStart(2, '0')}] ` +
+      `code=${doc.doc_code} | pages=${doc.start_page}–${doc.end_page} | ` +
+      `conf=${doc.confidence.toFixed(2)} | inv="${doc.invoice_number ?? 'N/A'}" | ` +
+      `vendor="${doc.vendor ?? 'N/A'}"${reviewFlag}`
+    );
+  });
+
+  return { boundaries, usage: totalUsage };
 };
 
 export default detectBoundaries;
