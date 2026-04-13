@@ -1,10 +1,11 @@
 /* eslint-disable camelcase */
 import path from 'path';
 import { readFile, unlink } from 'fs/promises';
-import ai, { FLAGSHIP_MODEL } from '../../config/gemini.js';
+import ai, { CHEAP_MODEL, FLAGSHIP_MODEL } from '../../config/gemini.js';
 import { getPdfPageCount, splitPdf } from '../../utils/pdf-helper.js';
 import { calculatePrice } from '../../utils/token-pricing.js';
 import { fileURLToPath } from 'url';
+import pool from '../../config/database.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -208,6 +209,73 @@ const mergePageResults = (pageResults) => {
   return { fields: mergedFields, items: mergedItems, usage };
 };
 
+const revalidateDocCode = async (docFilePath, candidateCode, vendorName) => {
+  const AWB_CODES = new Set(['740', '741']);
+  if (!AWB_CODES.has(candidateCode)) return candidateCode;
+
+  // Layer 1: Deterministic check dari vendor name (zero cost)
+  if (vendorName) {
+    const upper = vendorName.toUpperCase();
+    const isAirline = /\b(AIR|AIRLINES|AIRWAYS|AVIATION)\b/.test(upper) ||
+      /\b(GARUDA|EMIRATES|CATHAY|LUFTHANSA|QATAR|KOREAN|SINGAPORE|THAI|TURKISH|QANTAS|JAPAN)\b/.test(upper);
+
+    if (isAirline && candidateCode === '740') {
+      console.info(`[Phase2] Vendor-name re-validation: "${vendorName}" is airline → corrected 740 → 741`);
+      return '741';
+    }
+    if (!isAirline && candidateCode === '741') {
+      console.info(`[Phase2] Vendor-name re-validation: "${vendorName}" is not airline → corrected 741 → 740`);
+      return '740';
+    }
+    // Vendor name match dengan kandidat kode — sudah benar, skip API call
+    if ((isAirline && candidateCode === '741') || (!isAirline && candidateCode === '740')) {
+      return candidateCode;
+    }
+  }
+
+  // Layer 2: Fallback ke cheap model jika vendor name kosong / ambigu
+  console.info('[Phase2] Vendor name ambiguous or missing, falling back to AI re-validation...');
+  const pdfBuffer = await readFile(docFilePath);
+  const base64Pdf = pdfBuffer.toString('base64');
+
+  const prompt = `Classify this air waybill document. Look ONLY at:
+1. The document header/title — does it contain the word "HOUSE", "HAB", or "HAWB"?
+2. The issuer/carrier name — does it contain "AIR", "AIRLINES", or "AIRWAYS", or is it a known airline?
+
+Rules:
+- Header has "HOUSE" / "HAB" / "HAWB" → {"code":"740"}
+- Issuer is an airline (name has AIR/AIRLINES/AIRWAYS or known airline brand) → {"code":"741"}
+- Issuer is a forwarder/logistics company → {"code":"740"}
+
+Return ONLY valid JSON. No explanation.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: CHEAP_MODEL,
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: 'application/pdf', data: base64Pdf } },
+        ],
+      }],
+      config: { maxOutputTokens: 16, responseMimeType: 'application/json' },
+    });
+
+    const parsed = JSON.parse(response.text?.trim() ?? '{}');
+    if (parsed.code && AWB_CODES.has(String(parsed.code))) {
+      const corrected = String(parsed.code);
+      if (corrected !== candidateCode) {
+        console.info(`[Phase2] AI re-validation corrected: ${candidateCode} → ${corrected}`);
+      }
+      return corrected;
+    }
+  } catch (err) {
+    console.warn(`[Phase2] AI re-validation failed, keeping ${candidateCode}: ${err.message}`);
+  }
+
+  return candidateCode;
+};
+
 // ── Main export ────────────────────────────────────────────────────────────
 const extractDocument = async (docFilePath, schemaPath, docCode) => {
   const wallStart = Date.now();
@@ -218,6 +286,16 @@ const extractDocument = async (docFilePath, schemaPath, docCode) => {
   const totalPages = await getPdfPageCount(docFilePath);
 
   console.info(`[Phase2] ${totalPages} page(s) — concurrency: ${CONCURRENCY}`);
+
+  const validatedCode = await revalidateDocCode(docFilePath, docCode);
+  if (validatedCode !== docCode) {
+    // Muat ulang schema yang benar
+    const { rows } = await pool.query( // jika pool tersedia di sini, atau pass schemaPath dari worker
+      'SELECT schema_path FROM document_types WHERE code = $1 LIMIT 1', [validatedCode]
+    );
+    schemaPath = rows[0]?.schema_path ?? schemaPath;
+    docCode = validatedCode;
+  }
 
   // ── 1 halaman: langsung extract tanpa split ────────────────────────────
   if (totalPages === 1) {

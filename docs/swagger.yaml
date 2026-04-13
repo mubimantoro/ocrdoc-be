@@ -1,0 +1,471 @@
+openapi: 3.0.0
+info:
+  title: Document Extraction API
+  description: AI-assisted Document Parser untuk PT. UNIAIR INDOTAMA CARGO.
+
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api
+    description: Local Development Server
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          example: "Operator"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Access Token (JWT)
+        refreshToken:
+          type: string
+          description: Refresh Token
+        user:
+          $ref: "#/components/schemas/User"
+
+    SourceFile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        file_name:
+          type: string
+        status:
+          type: string
+          example: "completed"
+        progress:
+          type: integer
+          example: 100
+        processing_time:
+          type: object
+          properties:
+            started_at:
+              type: string
+              format: date-time
+            completed_at:
+              type: string
+              format: date-time
+            duration_sec:
+              type: number
+        ai_usage:
+          type: object
+          properties:
+            model:
+              type: string
+              example: "gemini-3-flash-preview"
+            prompt_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+            cheap_model_price:
+              type: number
+              format: float
+            flagship_model_price:
+              type: number
+              format: float
+            total_price:
+              type: number
+              format: float
+
+    DocumentDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        start_page:
+          type: integer
+        end_page:
+          type: integer
+        status:
+          type: string
+          example: "completed"
+        confidence:
+          type: number
+          format: float
+          example: 0.9850
+        needs_review:
+          type: boolean
+        ai_usage:
+          $ref: "#/components/schemas/SourceFile/properties/ai_usage"
+        fields:
+          type: array
+          description: "Data Header (EAV Format)"
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+        items:
+          type: array
+          description: "Data List/Tabel (EAV Format)"
+          items:
+            type: object
+            properties:
+              row_index:
+                type: integer
+
+tags:
+  - name: Authentication
+    description: Endpoint untuk Login, Logout, dan Refresh Token
+  - name: Users
+    description: Endpoint manajemen pengguna (Khusus Admin)
+  - name: Source Files
+    description: Endpoint upload dan tracking PDF sumber
+  - name: Documents
+    description: Endpoint hasil ekstraksi EAV dan format Raw
+
+paths:
+  # ==========================================
+  # 0. AUTHENTICATION ENDPOINTS
+  # ==========================================
+  /authentications/login:
+    post:
+      tags:
+        - Authentication
+      summary: Login User
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "admin@perusahaan.com"
+                password:
+                  type: string
+                  example: "rahasia123"
+      responses:
+        "200":
+          description: Login berhasil
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                  data:
+                    $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Email atau password salah
+
+  /authentications/refresh-token:
+    put:
+      tags:
+        - Authentication
+      summary: Memperbarui Access Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          description: Token berhasil diperbarui
+
+  /authentications/logout:
+    delete:
+      tags:
+        - Authentication
+      summary: Logout User (Menghapus Refresh Token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          description: Logout berhasil
+
+  # ==========================================
+  # 1. USERS ENDPOINTS
+  # ==========================================
+  /users:
+    get:
+      tags:
+        - Users
+      summary: Mendapatkan semua daftar user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Berhasil mengambil daftar user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/User"
+    post:
+      tags:
+        - Users
+      summary: Membuat user baru
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - email
+                - password
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                password:
+                  type: string
+                role:
+                  type: string
+                  example: "Operator"
+      responses:
+        "201":
+          description: User berhasil dibuat
+
+  /users/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags:
+        - Users
+      summary: Mendapatkan detail user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Detail User
+    put:
+      tags:
+        - Users
+      summary: Update nama dan role user
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                role:
+                  type: string
+      responses:
+        "200":
+          description: Berhasil diupdate
+    delete:
+      tags:
+        - Users
+      summary: Hapus user permanen
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Berhasil dihapus
+
+  /users/{id}/reset-password:
+    patch:
+      tags:
+        - Users
+      summary: Mereset password user
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newPassword:
+                  type: string
+      responses:
+        "200":
+          description: Password berhasil direset
+
+  # ==========================================
+  # 2. SOURCE FILES ENDPOINTS
+  # ==========================================
+  /source-files:
+    get:
+      tags:
+        - Source Files
+      summary: Mendapatkan daftar PDF sumber
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of Source Files
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SourceFile"
+
+    post:
+      tags:
+        - Source Files
+      summary: Mengunggah PDF
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: File PDF maksimal 20MB
+      responses:
+        "202":
+          description: File berhasil diunggah ke antrean
+
+  /source-files/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags:
+        - Source Files
+      summary: Detail file sumber & progress
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Berhasil
+
+  # ==========================================
+  # 3. DOCUMENTS ENDPOINTS
+  # ==========================================
+  /documents:
+    get:
+      tags:
+        - Documents
+      summary: Daftar dokumen hasil ekstraksi
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List Dokumen
+
+  /documents/{id}:
+    get:
+      tags:
+        - Documents
+      summary: Mendapatkan detail dokumen (EAV atau Raw)
+      description: |
+        Secara default, format yang dikembalikan adalah **EAV Pattern** (`fields` dan `items` array).
+        Gunakan parameter `raw=true` untuk mendapatkan struktur JSON murni yang sesuai dengan skema Klien, bebas dari metadata internal.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: raw
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: "true = Format JSON asli Klien. false = Format EAV Database"
+      responses:
+        "200":
+          description: Detail Dokumen (Struktur JSON menyesuaikan parameter raw)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                  data:
+                    $ref: "#/components/schemas/DocumentDetail"

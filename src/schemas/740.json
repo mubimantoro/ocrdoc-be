@@ -1,0 +1,21 @@
+{
+"confidence_score": "INSTRUCTION: Berikan skor dari 0.000 hingga 1.000 seberapa yakin Anda dengan hasil ekstraksi dokumen ini. Jika buram atau banyak data terpotong, berikan skor rendah (misal 0.500)",
+  "doc_code": "740",
+  "doc_name": "Air Way Bill",
+  "fields": [
+    "awb_num", "awb_num_add", "doc_date",
+    "shipper_name", "shipper_address", "shipper_phone", "shipper_tax_id", "shipper_country", "shipper_country_code",
+    "carrier_name", "carrier_address",
+    "consignee_name", "consignee_address", "consignee_tax_id", "consignee_phone", "consignee_fax", "consignee_notify_name",
+    "departure_airport", "departure_airport_code", "departure_airport_country_code",
+    "transit_airport", "transit_airport_code", "transit_airport_country_code",
+    "destination_airport", "destination_airport_code", "destination_airport_country_code",
+    "flight_num", "flight_name", "departure_date",
+    "box_num", "weight"
+  ],
+  "packs": [
+    "no_pieces", "quantity", "packaging_unit", "uom", "prod_number",
+    "weight", "charger_weight", "uow", "brand"
+  ],
+  "items": ["description", "hs_code"]
+}

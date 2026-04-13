@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import authenticationToken from '../../../middlewares/auth.js';
-import authorize from '../../../middlewares/authorize.js';
-import { create as createUser, deleteUser, getAll as getUsers, getById as getUserById } from '../controller/user-controller.js';
+import { createUser, deleteUser, getUserById, getUsers, resetPassword, updateUser } from '../controller/user-controller.js';
+import authorizeRole from '../../../middlewares/authorize.js';
 
 const router = Router();
 
-router.get('/', authenticationToken, authorize('admin'), getUsers);
-router.get('/:id', authenticationToken, authorize('admin'), getUserById);
-router.post('/', authenticationToken, authorize('admin'), createUser);
-router.delete('/:id', authenticationToken, authorize('admin'), deleteUser);
+router.post('/', authenticationToken, authorizeRole(['admin']), createUser);
+router.get('/', authenticationToken, authorizeRole(['admin']), getUsers);
+router.get('/:id', authenticationToken, authorizeRole(['admin']), getUserById);
+router.put('/:id', authenticationToken, authorizeRole(['admin']), updateUser);
+router.delete('/:id', authenticationToken, authorizeRole(['admin']), deleteUser);
+router.patch('/:id/reset-password', authenticationToken, authorizeRole(['admin']), resetPassword);
 
 export default router;

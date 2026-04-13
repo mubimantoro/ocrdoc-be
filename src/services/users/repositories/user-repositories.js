@@ -48,6 +48,59 @@ class UserRepositories {
     return rows.map((r) => this.#mapRow(r));
   }
 
+  async getUsers() {
+    const query = `
+      SELECT u.id, u.name, u.email, r.name as role, u.created_at, u.updated_at 
+      FROM users u 
+      JOIN roles r ON u.role_id = r.id 
+      ORDER BY u.created_at DESC;
+    `;
+    const result = await pool.query(query);
+    return result.rows;
+  }
+
+  async getUserById(id) {
+    const query = `
+      SELECT u.id, u.name, u.email, r.name as role, u.created_at, u.updated_at 
+      FROM users u 
+      JOIN roles r ON u.role_id = r.id 
+      WHERE u.id = $1;
+    `;
+    const result = await pool.query(query, [id]);
+    return result.rows[0];
+  }
+
+  async updateUser(id, name, roleId) {
+    const query = `
+      UPDATE users 
+      SET name = $1, role_id = $2, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $3 
+      RETURNING id, name, email;
+    `;
+    const result = await pool.query(query, [name, roleId, id]);
+    return result.rows[0];
+  }
+
+  async deleteUser(id) {
+    const query = 'DELETE FROM users WHERE id = $1 RETURNING id;';
+    const result = await pool.query(query, [id]);
+    return result.rowCount > 0; // Mengembalikan true jika berhasil dihapus
+  }
+
+  /**
+   * Mereset password user
+   */
+  async updatePassword(id, hashedPassword) {
+    const query = `
+      UPDATE users 
+      SET password = $1, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $2 
+      RETURNING id;
+    `;
+    const result = await pool.query(query, [hashedPassword, id]);
+    return result.rowCount > 0;
+  }
+
   async findById(id) {
     const { rows } = await pool.query(
       `${this.#baseQuery()} WHERE u.id = $1 LIMIT 1`, [id]

@@ -3,19 +3,22 @@ import pool from '../../../config/database.js';
 
 class AuthenticationRepositories {
 
-  async saveRefreshToken(token) {
+  async saveRefreshToken(token, userId) {
     await pool.query(
-      'INSERT INTO authentications (token) VALUES ($1)',
-      [token]
+      'INSERT INTO authentications (token, user_id) VALUES ($1, $2)',
+      [token, userId]
     );
   }
 
   async verifyRefreshToken(token) {
     const { rows } = await pool.query(
-      'SELECT token FROM authentications WHERE token = $1 LIMIT 1',
+      'SELECT token FROM authentications WHERE token = $1',
       [token]
     );
-    if (!rows.length) throw new AuthenticationError('Refresh token tidak ditemukan');
+
+    if (!rows.length) {
+      throw new AuthenticationError('Refresh token tidak valid.');
+    }
   }
 
   async deleteRefreshToken(token) {
@@ -23,7 +26,10 @@ class AuthenticationRepositories {
       'DELETE FROM authentications WHERE token = $1',
       [token]
     );
-    if (!rowCount) throw new InvariantError('Refresh token tidak ditemukan');
+
+    if (!rowCount) {
+      throw new InvariantError('Refresh token tidak ditemukan');
+    }
   }
 }
 

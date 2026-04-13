@@ -10,14 +10,31 @@ const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD);
 const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE);
 const CHUNK_OVERLAP = parseInt(process.env.CHUNK_OVERLAP);
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/**
+ * Document type registry.
+ * Format: "<code>: <name> — <discriminating visual/structural features>"
+ *
+ * MAINTENANCE NOTE:
+ *  - Keep descriptions focused on OBSERVABLE features (header text, field names,
+ *    number formats, issuing party). Avoid vague descriptions.
+ *  - When adding a new type, also add a disambiguation rule below if it shares
+ *    visual characteristics with an existing type.
+ */
 const TYPE_LIST = `
 380: Invoice — commercial invoice; ada kolom unit price/amount, seller name, buyer name, total amount, payment terms
 001: CIPL — gabungan invoice + packing list dalam 1 dokumen; ada line items dengan price DAN packaging dimension/weight sekaligus
 217: Packing List — hanya packaging; TIDAK ADA unit price per item maupun total invoice amount
 705: Bill of Lading — HOUSE B/L atau Sea Waybill dari freight forwarder; moda transportasi LAUT; ada vessel name, voyage number, port of loading/discharge, container number; shipper = actual exporter
 704: Master Bill of Lading — MBL atau Sea Waybill (SWB/Non-Negotiable Waybill) diterbitkan langsung oleh SHIPPING LINE (Maersk, MSC, Evergreen, COSCO, WAN HAI, dll); header bertuliskan nama shipping line atau SCAC code mereka (MAEU=Maersk, MSCU=MSC, dll); ada vessel name, voyage, container; PENTING: meski header bertuliskan "WAYBILL" atau "NON-NEGOTIABLE WAYBILL", jika moda transportasi adalah LAUT (ada vessel/voyage/container/port) maka kode WAJIB 704 atau 705, BUKAN 740/741
-740: Air Way Bill — HAWB dari freight forwarder/agent; shipper = actual exporter; nomor AWB format agent (tanpa airline prefix 3 digit)
-741: Master AWB — MAWB diterbitkan langsung oleh MASKAPAI PENERBANGAN (Garuda, Lion Air, Singapore Airlines, dll); moda transportasi UDARA; CIRI KHAS: nomor format "XXX-XXXXXXXX" (3 digit airline code + 8 digit, contoh: "126-12345678"); TIDAK ADA vessel name atau container number
+740: Air Way Bill — HAWB (House Air Waybill); header bertuliskan "HOUSE AIR WAYBILL" / "HOUSE AIRWAY BILL" / "HAB",
+     ATAU header "AIR WAYBILL" biasa tapi ada field "HAWB NO" terisi, ATAU issued by perusahaan forwarder/logistics
+     (bukan maskapai); shipper = actual exporter; moda UDARA
+741: Master AWB — MAWB; header bertuliskan "AIR WAYBILL" / "AIRWAY BILL" tanpa kata "HOUSE",
+     DAN tidak ada field "HAWB NO"; issued by / carrier = maskapai penerbangan (nama mengandung
+     "AIR", "AIRLINES", "AIRWAYS", atau nama maskapai dikenal); nomor format "XXX-XXXXXXXX"
+     dengan 3 digit pertama adalah IATA airline prefix; moda UDARA
 860: ECOO — Certificate of Origin form ATIGA/ECOO; ada kolom "Preference Criterion" atau label "FTA"; diterbitkan lembaga penerbit COO
 861: COO — Certificate of Origin standar non-FTA; ada official stamp/tanda tangan otoritas; tidak ada kolom FTA/ATIGA
 958: Lartas — Laporan Surveyor (LS) dari lembaga survei RESMI (Sucofindo, Surveyor Indonesia, PT SCCI); header "LAPORAN SURVEYOR" atau "LS"; ada ls_number/vo_number, data importir, hs_code per item, tanda tangan surveyor
@@ -34,30 +51,67 @@ const TYPE_LIST = `
 999: Lainnya — tidak dapat diidentifikasi dengan kode di atas
 `.trim();
 
+/**
+ * Disambiguation rules injected into prompt for pairs that are visually similar.
+ *
+ * MAINTENANCE NOTE:
+ *  - One rule block per ambiguous pair.
+ *  - Each rule must reference a VERIFIABLE feature visible in the document.
+ *  - Order from most common confusion to least.
+ */
 const DISAMBIGUATION_RULES = `
 CRITICAL DISAMBIGUATION — baca sebelum mengklasifikasikan:
+1. Master AWB (741) vs House AWB (740) — DUA SINYAL SAJA, URUTAN KETAT:
 
-1. AWB (740) vs Master AWB (741):
-   - Nomor format "3digit-8digit" (contoh: "126-12345678", "618-87654321") → WAJIB kode 741
-   - Shipper di dokumen adalah freight forwarder / NVOCC → kode 741
-   - Header / letterhead adalah nama maskapai (Garuda, Lion Air, Singapore Airlines, dll) → kode 741
-   - Selain kondisi di atas → kode 740
+   SINYAL 1 — HEADER DOKUMEN (paling kuat, cek ini dulu):
+   - Header mengandung kata "HOUSE", "HAB", atau "HAWB" → WAJIB kode 740
+   - Header hanya "AIR WAYBILL" atau "AIRWAY BILL" tanpa kata "HOUSE" → lanjut ke Sinyal 2
+
+   SINYAL 2 — NAMA PENERBIT / VENDOR (nama maskapai atau forwarder):
+   - Nama vendor/issuer mengandung kata "AIR", "AIRLINES", "AIRWAYS", atau nama maskapai
+     dikenal (Garuda, Emirates, Cathay, Lufthansa, Qatar, Korean, Singapore, China Eastern,
+     China Southern, EVA, Turkish, Qantas, Japan Airlines, Thai Airways, dll.)
+     → WAJIB kode 741
+   - Nama vendor adalah perusahaan logistik/forwarder biasa (tidak ada unsur maskapai)
+     → kode 740
+
+   CONTOH:
+   - Header "Air Waybill" + vendor "EVA AIRWAYS CORPORATION" → kode 741 (Sinyal 2: ada "AIRWAYS")
+   - Header "House Air Waybill" + vendor apapun → kode 740 (Sinyal 1: ada "HOUSE")
+   - Header "Air Waybill" + vendor "UPS SUPPLY CHAIN SOLUTIONS" → kode 740 (Sinyal 2: bukan maskapai)
+   - Header "Air Waybill" + vendor "CHINA EASTERN AIRLINES" → kode 741 (Sinyal 2: ada "AIRLINES")
+
 
 2. Lartas (958) vs PI (959):
-   - Diterbitkan oleh Sucofindo, Surveyor Indonesia, atau PT SCCI; ada header "LAPORAN SURVEYOR" atau nomor "LS-XXXX" → WAJIB kode 958
+   - Diterbitkan oleh Sucofindo, Surveyor Indonesia, atau PT SCCI; ada header "LAPORAN SURVEYOR"
+     atau nomor "LS-XXXX" → WAJIB kode 958
    - Diterbitkan oleh Kementerian Perdagangan / BKPM; header "PERSETUJUAN IMPOR" → kode 959
-
-3. Bill of Lading (705) vs Master BL (704):
-   - Shipper = freight forwarder / NVOCC (bukan exporter asli) → kode 704
-   - Shipper = exporter asli → kode 705
-
+3. BL (705/704) vs AWB (740/741) — MODAL TRANSPORT IS THE PRIMARY SIGNAL:
+   - Dokumen memiliki "Vessel", "Voyage", "Container", "Port of Loading/Discharge"
+     → WAJIB kode 704 atau 705 (moda LAUT)
+   - Dokumen memiliki "Flight No", "Airport of Departure/Destination"
+     → kode 740 atau 741 (moda UDARA)
+   - Header "WAYBILL", "SEA WAYBILL", atau "NON-NEGOTIABLE WAYBILL" TIDAK BERARTI kode AWB (740/741)
+     Sea Waybill adalah dokumen LAUT — jika ada vessel/port/container, gunakan kode 704 atau 705
+   - Cara membedakan 704 vs 705 setelah dikonfirmasi moda laut:
+     * Diterbitkan oleh shipping line (Maersk/MAEU, MSC/MSCU, Evergreen, COSCO, WAN HAI) → kode 704
+     * Diterbitkan oleh freight forwarder / NVOCC → kode 705
 4. CIPL (001) vs Invoice (380) vs Packing List (217):
    - Ada BOTH unit price AND packaging dimension per item → kode 001
    - Ada unit price, tidak ada packaging data → kode 380
    - Ada packaging data, tidak ada unit price → kode 217
 `.trim();
+// ── Prompt Builder ────────────────────────────────────────────────────────────
 
-
+/**
+ * Builds the Phase 1 boundary detection prompt for a single PDF chunk.
+ *
+ * Separating the prompt into its own function makes it independently testable
+ * and easy to iterate on without touching business logic.
+ *
+ * @param {number} chunkPageCount - Total pages in THIS chunk (1-based)
+ * @returns {string}
+ */
 const buildDetectPrompt = (chunkPageCount) => `
 You are analyzing a PDF document for a freight forwarding company.
 This PDF may contain multiple separate logical documents combined into one file.
@@ -114,14 +168,19 @@ PAGE RANGE INTEGRITY (CRITICAL)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RESPONSE FORMAT — Return ONLY valid JSON, no explanation:
+- "Air Waybill" header + issued by airline (contains "AIR"/"AIRLINES"/"AIRWAYS") → doc_code "741"
+- "Air Waybill" header + issued by forwarder → doc_code "740"  
+- Any header with "HOUSE" → doc_code "740"
+
+Example output:
 {
   "documents": [
     {
-      "doc_code": "380",
-      "vendor": "PT. ABC SUPPLIER",
-      "invoice_number": "INV-2024-001",
+      "doc_code": "741",
+      "vendor": "CHINA EASTERN AIRLINES",
+      "invoice_number": "112-37912814",
       "start_page": 1,
-      "end_page": 5,
+      "end_page": 3,
       "confidence": 0.95
     }
   ]
@@ -178,8 +237,10 @@ const detectChunk = async (chunkPath, physicalStart, physicalEnd) => {
     total_tokens:  response.usageMetadata?.totalTokenCount      ?? 0,
   };
 
+  // Extract JSON — responseMimeType should guarantee clean JSON, but we
+  // apply a regex guard as a safety net against stray markdown fences.
   const jsonMatch = response.text?.match(/\{[\s\S]*\}/);
-  const rawText = jsonMatch ? jsonMatch[0].trim() : '{}';
+  const rawText   = jsonMatch ? jsonMatch[0].trim() : '{}';
 
   let documents;
   try {
@@ -441,6 +502,7 @@ const detectBoundaries = async (filePath) => {
   try {
     ({ allDocs, totalUsage } = await runChunks(chunks));
   } finally {
+    // Always clean up temp files regardless of success or failure
     await Promise.allSettled(
       chunks.map(({ chunkPath }) => unlink(chunkPath))
     );
