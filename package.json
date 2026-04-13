@@ -6,6 +6,7 @@
   "scripts": {
     "start:dev": "nodemon src/server.js",
     "worker:dev": "nodemon src/worker.js",
+    "start:worker": "node src/worker.js",
     "start:prod": "node src/server.js",
     "worker:prod": "node src/worker.js",
     "lint": "eslint ./",
