@@ -26,12 +26,14 @@ class DashboardRepositories {
       FROM source_files
     `);
 
+    // Query 2: Tabel extraction_jobs (HANYA memiliki created_at dan updated_at)
     const { rows: jobRows } = await pool.query(`
       SELECT
         -- Completed jobs today
         COUNT(*) FILTER (
           WHERE status = 'completed'
-            AND DATE(completed_at AT TIME ZONE 'Asia/Jakarta') = CURRENT_DATE
+            -- ✅ FIX: Menggunakan updated_at, bukan completed_at
+            AND DATE(updated_at AT TIME ZONE 'Asia/Jakarta') = CURRENT_DATE
         ) AS completed_today,
 
         -- Failed jobs today
