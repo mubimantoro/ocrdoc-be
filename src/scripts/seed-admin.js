@@ -31,7 +31,7 @@ const seedAdmin = async () => {
       `INSERT INTO users (id, name, email, password, role_id, created_at, updated_at) 
        VALUES (gen_random_uuid(), $1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        ON CONFLICT (email) DO NOTHING`,
-      ['Super Admin', adminEmail, hashedPassword, adminRoleId]
+      ['Administrator', adminEmail, hashedPassword, adminRoleId]
     );
 
     console.log('Admin Seeding Success!');
