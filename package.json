@@ -15,7 +15,7 @@
     "webhook": "node src/worker/webhook.js",
     "seed:admin": "node src/scripts/seed-admin.js",
     "seed:docs": "node src/scripts/seed-document-types.js",
-    "reset:db": "node src/scripts/reset-db.js",
+    "reset:db": "node src/scripts/drop-tabel.js",
     "setup:db": "npm run migrate:up && npm run seed:admin && npm run seed:docs"
   },
   "author": "",
