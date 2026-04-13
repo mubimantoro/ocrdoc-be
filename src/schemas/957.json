@@ -1,0 +1,6 @@
+{
+  "confidence_score": "INSTRUCTION: Berikan skor dari 0.000 hingga 1.000 seberapa yakin Anda dengan hasil ekstraksi dokumen ini. Jika buram atau banyak data terpotong, berikan skor rendah (misal 0.500)",
+  "doc_code": "957",
+  "doc_name": "SNI",
+  "fields": ["doc_date", "doc_number"]
+}

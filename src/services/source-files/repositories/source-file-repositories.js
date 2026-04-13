@@ -1,88 +1,142 @@
-/* eslint-disable camelcase */
 import pool from '../../../config/database.js';
 import { NotFoundError } from '../../../exceptions/index.js';
 
 class SourceFileRepositories {
-  #mapRow(row) {
-    const durationMs = row.started_at && row.completed_at
-      ? new Date(row.completed_at) - new Date(row.started_at)
-      : null;
 
-    return {
-      id: row.id,
-      file_name: row.file_name,
-      file_path: row.file_path,
-      mime_type: row.mime_type,
-      page_count: row.page_count,
-      status: row.status,
-      progress: row.progress,
-      error_message: row.error_message,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      processing_time: durationMs !== null ? {
-        started_at:   row.started_at,
-        completed_at: row.completed_at,
-        duration_ms:  durationMs,
-        duration_sec: parseFloat((durationMs / 1000).toFixed(2)),
-      } : null,
-      pricing: {
-        cheap_total_price: parseFloat(row.cheap_total_price  ?? 0),
-        smart_total_price: parseFloat(row.flagship_total_price ?? 0),
-        total_price: parseFloat(row.total_price ?? 0),
-      },
-      uploaded_by: row.uploader_id ? {
-        id: row.uploader_id, name: row.uploader_name,
-        email: row.uploader_email, role: row.uploader_role,
-      } : null,
-    };
+  /**
+   * Menyimpan metadata file yang diunggah oleh user
+   */
+  async create(fileName, filePath, mimeType, pageCount, uploadedBy, status = 'uploaded') {
+    const query = `
+    INSERT INTO source_files (file_name, file_path, mime_type, page_count, uploaded_by, status) 
+    VALUES ($1, $2, $3, $4, $5, $6) 
+    RETURNING *;
+  `;
+    const result = await pool.query(query, [fileName, filePath, mimeType, pageCount, uploadedBy, status]);
+    return result.rows[0];
   }
 
-  #baseQuery() {
-    return `SELECT sf.id, sf.file_name, sf.mime_type, sf.page_count,
-  sf.status, sf.progress, sf.error_message, sf.file_path,
-  sf.created_at, sf.updated_at, sf.started_at, sf.completed_at,
-   sf.cheap_total_price, sf.flagship_total_price, sf.total_price,
-  u.id AS uploader_id,
-  u.name  AS uploader_name,
-  u.email AS uploader_email,
-  r.name  AS uploader_role
-  FROM source_files sf
-  LEFT JOIN users u ON u.id  = sf.uploaded_by
-  LEFT JOIN roles r  ON r.id  = u.role_id`;
+  /**
+   * Dynamic Query Builder untuk Pagination Source Files
+   */
+  async countAll(filters = {}) {
+    let query = 'SELECT COUNT(*) FROM source_files WHERE 1=1';
+    const values = [];
+
+    if (filters.status) {
+      values.push(filters.status);
+      query += ` AND status = $${values.length}`;
+    }
+
+    const result = await pool.query(query, values);
+    return parseInt(result.rows[0].count, 10);
   }
 
-  async findAll({ page = 1, limit = 10, status = null } = {}) {
-    const offset = (page - 1) * limit;
-    const params = [];
-    const where  = status ? (params.push(status), 'WHERE sf.status = $1') : '';
-    const { rows: cr } = await pool.query(
-      `SELECT COUNT(*) AS total FROM source_files sf ${where}`, params
-    );
-    const total = parseInt(cr[0].total);
-    params.push(limit, offset);
-    const { rows } = await pool.query(
-      `${this.#baseQuery()} ${where} ORDER BY sf.created_at DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`, params
-    );
-    return { data: rows.map((r) => this.#mapRow(r)),
-      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) } };
-  }
+  async findAll(limit, offset, filters = {}) {
+    let query = `
+      SELECT sf.*, u.name AS uploaded_by_name 
+      FROM source_files sf
+      LEFT JOIN users u ON sf.uploaded_by = u.id
+      WHERE 1=1
+    `;
+    const values = [];
 
+    if (filters.status) {
+      values.push(filters.status);
+      query += ` AND sf.status = $${values.length}`;
+    }
+
+    values.push(limit, offset);
+    query += ` ORDER BY sf.created_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`;
+
+    const result = await pool.query(query, values);
+    return result.rows;
+  }
+  /**
+   * Mencari file berdasarkan ID
+   */
   async findById(id) {
-    const { rows } = await pool.query(
-      `${this.#baseQuery()} WHERE sf.id = $1 LIMIT 1`, [id]
-    );
-    if (!rows.length) throw new NotFoundError('Source file tidak ditemukan');
-    return this.#mapRow(rows[0]);
+    const query = `
+      SELECT sf.*, u.name as uploaded_by_name 
+      FROM source_files sf
+      LEFT JOIN users u ON sf.uploaded_by = u.id
+      WHERE sf.id = $1
+    `;
+    const result = await pool.query(query, [id]);
+
+    if (!result.rows.length) {
+      throw new NotFoundError(`Source file dengan ID ${id} tidak ditemukan.`);
+    }
+
+    return result.rows[0];
   }
 
-  async create({ fileName, filePath, mimeType, pageCount, uploadedBy }) {
-    const { rows } = await pool.query(
-      `INSERT INTO source_files (file_name, file_path, mime_type, page_count, uploaded_by, status)
-       VALUES ($1,$2,$3,$4,$5,'uploaded') RETURNING id`,
-      [fileName, filePath, mimeType, pageCount, uploadedBy]
-    );
-    return rows[0].id;
+  /**
+   * Mengupdate status pemrosesan file (misal: 'processing', 'completed', 'error')
+   */
+  async updateStatus(id, status) {
+    const query = `
+      UPDATE source_files 
+      SET status = $1, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $2 
+      RETURNING id;
+    `;
+    const result = await pool.query(query, [status, id]);
+
+    if (!result.rows.length) {
+      throw new NotFoundError(`Gagal update status: Source file dengan ID ${id} tidak ditemukan.`);
+    }
+
+    return result.rows[0];
+  }
+
+  /**
+   * Mengupdate progress pemrosesan (0-100%) untuk ditampilkan di UI
+   */
+  async updateProgress(id, progress) {
+    const query = `
+      UPDATE source_files 
+      SET progress = $1, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $2 
+      RETURNING id;
+    `;
+    const result = await pool.query(query, [progress, id]);
+
+    if (!result.rows.length) {
+      throw new NotFoundError(`Gagal update progress: Source file dengan ID ${id} tidak ditemukan.`);
+    }
+  }
+
+  /**
+   * Menyimpan metrik Boundary Detection (Model Cheap)
+   */
+  async updateInitialMetrics(id, metrics) {
+    const { input, output, ocr, price, startedAt, modelUsed } = metrics;
+    const query = `
+      UPDATE source_files 
+      SET cheap_token_input = $1, cheap_token_output = $2, cheap_token_ocr = $3, 
+          cheap_price = $4, started_at = $5, ai_model = $6, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $7 RETURNING *;
+    `;
+    const result = await pool.query(query, [input, output, ocr, price, startedAt, modelUsed, id]);
+    return result.rows[0];
+  }
+
+  /**
+   * Agregasi harga dari tabel documents
+   */
+  async finalizeMetrics(id) {
+    const query = `
+      UPDATE source_files 
+      SET 
+        total_flagship_price = COALESCE((SELECT SUM(price) FROM documents WHERE source_file_id = $1), 0),
+        total_price_all = cheap_price + COALESCE((SELECT SUM(price) FROM documents WHERE source_file_id = $1), 0),
+        completed_at = CURRENT_TIMESTAMP,
+        status = 'completed', progress = 100, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 RETURNING *;
+    `;
+    const result = await pool.query(query, [id]);
+    return result.rows[0];
   }
 
   async resetForRetry(id) {

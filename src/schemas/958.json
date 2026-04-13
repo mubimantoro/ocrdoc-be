@@ -1,0 +1,22 @@
+{
+   "confidence_score": "INSTRUCTION: Berikan skor dari 0.000 hingga 1.000 seberapa yakin Anda dengan hasil ekstraksi dokumen ini. Jika buram atau banyak data terpotong, berikan skor rendah (misal 0.500)",
+  "doc_code": "958",
+  "doc_name": "Lartas",
+  "fields": [
+    "ls_number", "vo_number",
+    "importer_name", "importer_address", "importer_city",
+    "importer_tax_id", "importer_API_NIB", "importer_PI", "importer_expiry_PI", "date_of_expiry",
+    "exporter_name", "exporter_address", "exporter_country",
+    "transportation_mode", "port_loading", "port_discharge",
+    "total_net_weight", "total_net_weight_measurement",
+    "place_of_verification", "date_of_verification", "date_of_issuance",
+    "quantity", "type_packing"
+  ],
+  "items": [
+    "number_item", "hs_code", "description",
+    "quantity_goods", "unit_of_measurement", "origin"
+  ],
+  "invoice_list": {
+    "fields": ["invoice_number"]
+  }
+}
