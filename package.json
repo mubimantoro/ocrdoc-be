@@ -5,17 +5,17 @@
   "main": "index.js",
   "scripts": {
     "start:dev": "nodemon src/server.js",
+    "start:prod": "node src/server.js",
     "worker:dev": "nodemon src/worker.js",
     "start:worker": "node src/worker.js",
-    "start:prod": "node src/server.js",
-    "worker:prod": "node src/worker.js",
-    "migrate": "node src/scripts/migrate.js",
+    "migrate:create": "node-pg-migrate create",
+    "migrate:up": "node-pg-migrate up",
+    "migrate:down": "node-pg-migrate down",
     "lint": "eslint ./",
     "webhook": "node src/worker/webhook.js",
     "seed:admin": "node src/scripts/seed-admin.js",
     "seed:docs": "node src/scripts/seed-document-types.js",
-    "seed:all": "npm run seed:admin && npm run seed:docs",
-    "setup:db": "npm run migrate && npm run seed:admin && npm run seed:docs"
+    "setup:db": "npm run migrate:up && npm run seed:admin && npm run seed:docs"
   },
   "author": "",
   "license": "ISC",
