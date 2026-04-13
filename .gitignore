@@ -1,7 +1,6 @@
 node_modules
 .env
 .prod.env
-scripts
 migration.sql
 uploads
 src/seeders
