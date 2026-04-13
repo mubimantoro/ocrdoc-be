@@ -2,7 +2,6 @@ openapi: 3.0.0
 info:
   title: Document Extraction API
   description: AI-assisted Document Parser untuk PT. UNIAIR INDOTAMA CARGO.
-
   version: 1.0.0
 servers:
   - url: http://localhost:3000/api
@@ -365,6 +364,42 @@ paths:
       summary: Mendapatkan daftar PDF sumber
       security:
         - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Halaman paginasi
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Jumlah data per halaman
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: Pencarian berdasarkan nama file
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [uploaded, processing, completed, failed]
+          description: Filter berdasarkan status pemrosesan
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+          description: Filter tanggal awal (YYYY-MM-DD), contoh 2026-04-14
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+          description: Filter tanggal akhir (YYYY-MM-DD), contoh 2026-04-15
       responses:
         "200":
           description: List of Source Files
@@ -429,43 +464,7 @@ paths:
       summary: Daftar dokumen hasil ekstraksi
       security:
         - bearerAuth: []
-      responses:
-        "200":
-          description: List Dokumen
-
-  /documents/{id}:
-    get:
-      tags:
-        - Documents
-      summary: Mendapatkan detail dokumen (EAV atau Raw)
-      description: |
-        Secara default, format yang dikembalikan adalah **EAV Pattern** (`fields` dan `items` array).
-        Gunakan parameter `raw=true` untuk mendapatkan struktur JSON murni yang sesuai dengan skema Klien, bebas dari metadata internal.
-      security:
-        - bearerAuth: []
       parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-            format: uuid
         - in: query
-          name: raw
-          required: false
-          schema:
-            type: boolean
-            default: false
-          description: "true = Format JSON asli Klien. false = Format EAV Database"
-      responses:
-        "200":
-          description: Detail Dokumen (Struktur JSON menyesuaikan parameter raw)
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  meta:
-                    type: object
-                  data:
-                    $ref: "#/components/schemas/DocumentDetail"
+          name: page
+          schema: type
