@@ -17,7 +17,7 @@ const seedAdmin = async () => {
     }
 
     const adminEmail = 'admin@dev.com';
-    const roleRes = await pool.query("SELECT id FROM roles WHERE name = 'Admin'");
+    const roleRes = await pool.query("SELECT id FROM roles WHERE name = 'admin'");
 
     if (roleRes.rowCount === 0) {
       throw new Error('Role Admin gagal dibuat!');
