@@ -17,7 +17,7 @@ const seedAdmin = async () => {
     }
 
     const adminEmail = 'admin@dev.com';
-    const roleRes = await pool.query("SELECT id FROM roles WHERE name = 'Admin'");
+    const roleRes = await pool.query("SELECT id FROM roles WHERE name = 'admin'");
 
     if (roleRes.rowCount === 0) {
       throw new Error('Role Admin gagal dibuat!');
@@ -31,7 +31,7 @@ const seedAdmin = async () => {
       `INSERT INTO users (id, name, email, password, role_id, created_at, updated_at) 
        VALUES (gen_random_uuid(), $1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        ON CONFLICT (email) DO NOTHING`,
-      ['Super Admin', adminEmail, hashedPassword, adminRoleId]
+      ['Administrator', adminEmail, hashedPassword, adminRoleId]
     );
 
     console.log('Admin Seeding Success!');
