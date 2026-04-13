@@ -1,4 +1,4 @@
-exports.up = (pgm) => {
+export const up = (pgm) => {
   pgm.sql(`
     CREATE TABLE extraction_jobs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -22,4 +22,6 @@ exports.up = (pgm) => {
     END $$;
   `);
 };
-exports.down = (pgm) => pgm.sql('DROP TABLE IF EXISTS extraction_jobs CASCADE;');
+export const down = (pgm) => {
+  pgm.sql('DROP TABLE IF EXISTS extraction_jobs CASCADE;');
+};

@@ -1,4 +1,4 @@
-exports.up = (pgm) => {
+export const up = (pgm) => {
   pgm.sql(`
     CREATE TABLE source_files (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -25,4 +25,6 @@ exports.up = (pgm) => {
     CREATE INDEX idx_source_files_uploaded_by ON source_files(uploaded_by);
   `);
 };
-exports.down = (pgm) => pgm.sql('DROP TABLE IF EXISTS source_files CASCADE;');
+export const down = (pgm) => {
+  pgm.sql('DROP TABLE IF EXISTS source_files CASCADE;');
+};

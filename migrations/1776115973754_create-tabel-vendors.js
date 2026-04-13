@@ -1,4 +1,4 @@
-exports.up = (pgm) => {
+export const up = (pgm) => {
   pgm.sql(`
     CREATE TABLE vendors (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -7,4 +7,6 @@ exports.up = (pgm) => {
     );
   `);
 };
-exports.down = (pgm) => pgm.sql('DROP TABLE IF EXISTS vendors CASCADE;');
+export const down = (pgm) => {
+  pgm.sql('DROP TABLE IF EXISTS vendors CASCADE;');
+};

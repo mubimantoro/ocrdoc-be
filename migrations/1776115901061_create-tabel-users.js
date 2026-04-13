@@ -1,4 +1,4 @@
-exports.up = (pgm) => {
+export const up = (pgm) => {
   pgm.sql(`
     CREATE TABLE users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -12,4 +12,6 @@ exports.up = (pgm) => {
     CREATE INDEX idx_users_role_id ON users(role_id);
   `);
 };
-exports.down = (pgm) => pgm.sql('DROP TABLE IF EXISTS users CASCADE;');
+export const down = (pgm) => {
+  pgm.sql('DROP TABLE IF EXISTS users CASCADE;');
+};
