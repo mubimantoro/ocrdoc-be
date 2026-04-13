@@ -1,4 +1,4 @@
-exports.up = (pgm) => {
+export const up= (pgm) => {
   pgm.sql(`
     CREATE TABLE items (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -8,4 +8,6 @@ exports.up = (pgm) => {
     CREATE INDEX idx_items_extraction_result_id ON items(extraction_result_id);
   `);
 };
-exports.down = (pgm) => pgm.sql('DROP TABLE IF EXISTS items CASCADE;');
+export const down = (pgm) => {
+  pgm.sql('DROP TABLE IF EXISTS items CASCADE;');
+};
