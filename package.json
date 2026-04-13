@@ -5,10 +5,11 @@
   "main": "index.js",
   "scripts": {
     "start:dev": "nodemon src/server.js",
+    "worker:dev": "nodemon src/worker.js",
+    "start:worker": "node src/worker.js",
     "start:prod": "node src/server.js",
+    "worker:prod": "node src/worker.js",
     "lint": "eslint ./",
-    "worker": "node src/worker/document.js",
-    "worker:dev": "node src/worker.js",
     "webhook": "node src/worker/webhook.js"
   },
   "author": "",
