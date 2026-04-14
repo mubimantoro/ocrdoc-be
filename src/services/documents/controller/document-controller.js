@@ -1,10 +1,11 @@
 /* eslint-disable camelcase */
-import { extractionQueue } from '../../../config/queue.js';
 import { InvariantError, NotFoundError } from '../../../exceptions/index.js';
+import { extractionQueue } from '../../../queues/extraction-queue.js';
 import { formatDocumentResponse, formatListDocumentResponse } from '../../../utils/mapper/document-mapper.js';
 import { transformRawData } from '../../../utils/mapper/raw-transformer.js';
 import response from '../../../utils/response.js';
 import DocumentRepositories from '../repositories/document-repositories.js';
+import extractionJobRepositories from '../repositories/extraction-job-repositories.js';
 
 export const getDocuments = async (req, res, next) => {
   try {
@@ -74,18 +75,34 @@ export const retryDocument = async (req, res, next) => {
     }
 
     if (document.status === 'completed') {
-      throw new InvariantError('Dokumen sudah berhasil diproses, tidak perlu di-retry');
+      throw new InvariantError('Dokumen sudah berhasil diproses, tidak perlu di-retry.');
+    }
+    if (document.status === 'extracting') {
+      throw new InvariantError('Dokumen sedang dalam proses, tunggu hingga selesai.');
+    }
+    if (!document.doc_type_code) {
+      throw new InvariantError('Tipe dokumen tidak valid atau tidak ditemukan.');
     }
 
+    // Reset Status Dokumen menjadi Queued
     await DocumentRepositories.updateStatus(id, 'queued', null);
 
+    // Buat extraction_job baru (Mempertahankan baris 'failed' lama sebagai audit trail)
+    const newJobTracking = await extractionJobRepositories.create(id, null, 'queued');
 
-    await extractionQueue.add('extract-data', {
+
+    const extractJob = await extractionQueue.add('extract-data', {
       documentId: document.id,
       sourceFileId: document.source_file_id,
       splitFilePath: document.file_path,
       docCode: document.doc_type_code
+    }, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: true,
     });
+
+    await extractionJobRepositories.updateBullmqId(newJobTracking.id, extractJob.id);
 
     return response(res, 200, 'Dokumen berhasil dimasukkan kembali ke antrean untuk diproses ulang');
   } catch (error) {

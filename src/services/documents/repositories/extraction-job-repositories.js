@@ -43,13 +43,17 @@ class ExtractionJobRepositories {
     return result.rows[0];
   }
 
-  /**
-   * (Opsional) Mengambil detail job berdasarkan Document ID
-   */
   async findByDocumentId(documentId) {
-    const query = 'SELECT * FROM extraction_jobs WHERE document_id = $1 ORDER BY created_at DESC LIMIT 1';
-    const result = await pool.query(query, [documentId]);
-    return result.rows[0] || null;
+    const query = {
+      text: `SELECT * FROM extraction_jobs 
+             WHERE document_id = $1 
+             ORDER BY created_at DESC 
+             LIMIT 1`,
+      values: [documentId],
+    };
+
+    const result = await pool.query(query);
+    return result.rows[0];
   }
 
   /**
