@@ -1,5 +1,4 @@
 /* eslint-disable camelcase */
-
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -7,6 +6,7 @@ import { getBoundaryPrompt } from '../../prompts/boundary.js';
 import { ai, MODELS } from '../../config/gemini.js';
 import { getExtractionPrompt } from '../../prompts/extraction.js';
 import { PDFDocument } from 'pdf-lib';
+import { cleanAIJson } from '../../utils/ai-sanitizer.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -52,7 +52,7 @@ export const detectBoundaries = async (fileBuffer, mimeType) => {
     }
   });
 
-  const parsedText = JSON.parse(response.text);
+  const parsedText = cleanAIJson(response.text);
   const usageMetadata = response.usageMetadata || {};
 
   const totalInput = usageMetadata.promptTokenCount || 0;
@@ -180,7 +180,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode) => {
     }
   });
 
-  const parsedData = JSON.parse(response.text);
+  const parsedData = cleanAIJson(response.text);
   const usageMetadata = response.usageMetadata || {};
 
   const totalInput = usageMetadata.promptTokenCount || 0;

@@ -149,7 +149,7 @@ paths:
   # ==========================================
   # 0. AUTHENTICATION ENDPOINTS
   # ==========================================
-  /authentications/login:
+  /auth/login:
     post:
       tags:
         - Authentication
@@ -186,7 +186,7 @@ paths:
         "401":
           description: Email atau password salah
 
-  /authentications/refresh-token:
+  /auth/refresh-token:
     put:
       tags:
         - Authentication
@@ -206,7 +206,7 @@ paths:
         "200":
           description: Token berhasil diperbarui
 
-  /authentications/logout:
+  /auth/logout:
     delete:
       tags:
         - Authentication
