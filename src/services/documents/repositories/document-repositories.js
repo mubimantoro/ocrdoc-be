@@ -1,4 +1,4 @@
-/* eslint-disable camelcase */
+
 import pool from '../../../config/database.js';
 import { InvariantError, NotFoundError } from '../../../exceptions/index.js';
 
