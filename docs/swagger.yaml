@@ -467,4 +467,81 @@ paths:
       parameters:
         - in: query
           name: page
-          schema: type
+          schema:
+            type: integer
+            default: 1
+          description: Halaman paginasi
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Jumlah data per halaman
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: Pencarian berdasarkan nomor dokumen
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [queued, extracting, completed, failed]
+          description: Filter berdasarkan status dokumen
+        - in: query
+          name: document_type_id
+          schema:
+            type: string
+            format: uuid
+          description: Filter berdasarkan ID Tipe Dokumen (Master Data)
+        - in: query
+          name: vendor_id
+          schema:
+            type: string
+            format: uuid
+          description: Filter berdasarkan ID Vendor
+        - in: query
+          name: needs_review
+          schema:
+            type: boolean
+          description: Filter true untuk dokumen yang butuh review manusia (confidence rendah)
+      responses:
+        "200":
+          description: List Dokumen
+
+  /documents/{id}:
+    get:
+      tags:
+        - Documents
+      summary: Mendapatkan detail dokumen (EAV atau Raw)
+      description: |
+        Secara default, format yang dikembalikan adalah **EAV Pattern** (`fields` dan `items` array).
+        Gunakan parameter `raw=true` untuk mendapatkan struktur JSON murni yang sesuai dengan skema Klien, bebas dari metadata internal.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: raw
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: "true = Format JSON asli Klien. false = Format EAV Database"
+      responses:
+        "200":
+          description: Detail Dokumen (Struktur JSON menyesuaikan parameter raw)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                  data:
+                    $ref: "#/components/schemas/DocumentDetail"
