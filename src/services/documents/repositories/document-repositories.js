@@ -48,7 +48,7 @@ class DocumentRepositories {
     }
 
     values.push(limit, offset);
-    query += ` ORDER BY d.created_at ASC LIMIT $${values.length - 1} OFFSET $${values.length}`;
+    query += ` ORDER BY d.start_page ASC LIMIT $${values.length - 1} OFFSET $${values.length}`;
 
     const result = await pool.query(query, values);
     return result.rows;

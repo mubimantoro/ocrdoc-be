@@ -1,5 +1,0 @@
-{
-  "doc_code": "741",
-  "doc_name": "Master AWB",
-  "fields": ["master_num", "doc_date", "flight_num", "flight_name"]
-}

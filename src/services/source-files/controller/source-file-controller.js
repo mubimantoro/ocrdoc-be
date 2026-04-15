@@ -10,31 +10,6 @@ import SourceFileRepositories from '../repositories/source-file-repositories.js'
 import { formatSourceFileResponse } from '../../../utils/mapper/source-file.mapper.js';
 import { boundaryQueue } from '../../../queues/boundary-queue.js';
 
-/* export const upload = async (req, res, next) => {
-  try {
-    if (!req.file) return next(new InvariantError('File wajib diupload'));
-
-    const pageCount = await getPdfPageCount(req.file.path);
-    const sourceFileId = await SourceFileRepositories.create({
-      fileName: req.file.originalname,
-      filePath: req.file.path,
-      mimeType: req.file.mimetype,
-      pageCount,
-      uploadedBy: req.user.id,
-    });
-
-    await extractionQueue.add(
-      'process-document',
-      { sourceFileId, filePath: req.file.path }
-    );
-
-    const sourceFile = await SourceFileRepositories.findById(sourceFileId);
-    return response(res, 200, 'File berhasil diupload dan dimasukkan ke antrian', sourceFile);
-  } catch (err) {
-    next(err);
-  }
-}; */
-
 /**
  * ==========================================
  * UPLOAD FILE (Asynchronous Pipeline)
@@ -43,6 +18,7 @@ import { boundaryQueue } from '../../../queues/boundary-queue.js';
 export const uploadFile = async (req, res, next) => {
   try {
     const file = req.file;
+    const { doc_type } = req.body;
     if (!file) return next(new InvariantError('File PDF wajib diunggah.'));
 
     // Mengambil metadata dari diskStorage Multer
@@ -52,19 +28,25 @@ export const uploadFile = async (req, res, next) => {
 
     const relativeFilePath = `uploads/${fileName}`;
 
-    // 1. Ekstrak Total Halaman (Secara efisien)
-    let pageCount;
-    try {
-      // Buffer ini akan langsung dibersihkan oleh Garbage Collector (V8)
-      // segera setelah blok try ini selesai, sehingga RAM tetap aman.
-      const fileBuffer = await fs.readFile(absoluteFilePath);
-      const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-      pageCount = pdfDoc.getPageCount();
-    } catch (err) {
-      return next(new InvariantError('Dokumen PDF rusak, terenkripsi, atau dilindungi kata sandi.'));
+    const isPdf = mimeType === 'application/pdf';
+    const isImage = mimeType.startsWith('image/');
+    const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+
+    // Ekstrak Total Halaman
+    let pageCount =  1;
+
+    if (isPdf) {
+      try {
+        const fileBuffer = await fs.readFile(absoluteFilePath);
+        const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+        pageCount = pdfDoc.getPageCount();
+      } catch (err) {
+        return next(new InvariantError('Dokumen PDF rusak, terenkripsi, atau dilindungi kata sandi.'));
+      }
+    } else if (!isImage && !isExcel) {
+      return next(new InvariantError(`Tipe file tidak didukung oleh sistem: ${mimeType}`));
     }
 
-    // 2. Buat Rekaman Induk
     const sourceFileRecord = await SourceFileRepositories.create(
       fileName,
       relativeFilePath,
@@ -80,7 +62,8 @@ export const uploadFile = async (req, res, next) => {
       absoluteFilePath: absoluteFilePath,
       fileName: fileName,
       mimeType: mimeType,
-      pageCount: pageCount
+      pageCount: pageCount,
+      manualDocType: doc_type,
     }, {
       removeOnComplete: true, // Jaga RAM Redis tetap bersih dari job yang sukses
       attempts: 3, // Resiliensi: Jika worker gagal baca file, otomatis coba lagi
@@ -170,40 +153,3 @@ export const retry = async (req, res, next) => {
     return response(res, 200, 'Retry berhasil dimasukkan ke antrian', updated);
   } catch (err) { next(err); }
 };
-
-/* export const stream = async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    await SourceFileRepositories.findById(id);
-  } catch {
-    return res.status(404).json({
-      meta: { success: false, message: 'Source file tidak ditemukan' },
-    });
-  }
-
-  res.setHeader('Access-Control-Allow-Origin',  process.env.CORS_ORIGIN);
-  res.setHeader('Access-Control-Allow-Credentials',  'true');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
-
-  const sourceFile = await SourceFileRepositories.findById(id);
-  res.write(`event: connected\ndata: ${JSON.stringify({
-    source_file_id: id,
-    status: sourceFile.status,
-    progress: sourceFile.progress,
-  })}\n\n`);
-
-  addClient(id, res);
-
-  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 30000);
-
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    removeClient(id, res);
-  });
-}; */

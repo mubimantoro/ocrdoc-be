@@ -1,4 +1,4 @@
-/* eslint-disable no-unused-vars */
+
 /* eslint-disable camelcase */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { PDFDocument } from 'pdf-lib';
 import { Queue, Worker } from 'bullmq';
+import * as xlsx from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,8 +19,9 @@ import VendorRepositories from '../services/documents/repositories/vendor-reposi
 import DocumentRepositories from '../services/documents/repositories/document-repositories.js';
 import { extractionQueue } from './extraction-queue.js';
 import ExtractionJobRepositories from '../services/documents/repositories/extraction-job-repositories.js';
-import { detectBoundariesChunked } from '../services/integrations/ai-service.js';
+import { detectBoundaries, detectBoundariesChunked } from '../services/integrations/ai-service.js';
 import { uploadToStorage } from '../services/integrations/storage-service.js';
+import { resolveBoundaryOverlaps } from '../utils/boundary-resolver.js';
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -33,41 +35,106 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
   console.log('\n===========================================');
   console.log(`[BOUNDARY WORKER] Memulai Job ID: ${job.id}`);
 
-  const { sourceFileId, absoluteFilePath, fileName, mimeType, pageCount } = job.data;
+  const { sourceFileId, absoluteFilePath, fileName, mimeType, manualDocType, pageCount } = job.data;
   const startTime = new Date();
 
   try {
     await SourceFileRepositories.updateStatus(sourceFileId, 'processing');
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'processing', progress: 5 });
 
+    const isPdf = mimeType === 'application/pdf';
+    const isImage = mimeType.startsWith('image/');
+    const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+
+    let documents = [];
+    let boundaryUsage = { input_text: 0, output: 0, ocr: 0, total: 0 };
+    let modelUsed = null;
+
     // ==============================================================
-    // 1. FASE AI CHUNKING
+    // 1. FASE AI IDENTIFICATION (MULTI-FORMAT ROUTING)
     // ==============================================================
-    console.log('[BOUNDARY WORKER] Mengirim file ke AI untuk pemetaan halaman...');
-    const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 30);
+    const fileBuffer = await fs.readFile(absoluteFilePath);
+
+    if (manualDocType) {
+      console.log(`[BOUNDARY WORKER] Menggunakan Manual Doc Type: ${manualDocType}`);
+      documents = [{
+        doc_code: manualDocType,
+        start_page: 1,
+        end_page: pageCount,
+        document_number: fileName,
+        vendor: 'MANUAL_UPLOAD'
+      }];
+    } else {
+      if (isPdf) {
+        console.log('[BOUNDARY WORKER] [PDF MODE] Memulai chunking AI...');
+        const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 30);
+
+        const rawDocuments = boundaryResult.documents || [];
+        console.log(`[BOUNDARY WORKER] Ditemukan ${rawDocuments.length} dokumen mentah. Menganalisis overlap...`);
+        documents = resolveBoundaryOverlaps(rawDocuments);
+
+        boundaryUsage = boundaryResult.usage;
+        modelUsed = boundaryResult.model_used;
+      } else if (isImage) {
+        console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar');
+        const boundaryResult = await detectBoundaries(fileBuffer, mimeType);
+
+        // Paksa start_page dan end_page menjadi 1 karena gambar tidak memiliki multi-halaman
+        documents = (boundaryResult.documents || []).map((doc) => ({ ...doc, start_page: 1, end_page: 1 }));
+        boundaryUsage = boundaryResult.usage;
+        modelUsed = boundaryResult.model_used;
+      } else if (isExcel) {
+        console.log('[BOUNDARY WORKER] [EXCEL MODE] Memecah Sheets menjadi dokumen terpisah');
+        const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
+
+        const mapSheetToDocCode = (name) => {
+          const n = name.toUpperCase();
+          if (n.includes('INV')) return '380'; // Invoice
+          if (n.includes('PL')) return '217';
+          return null; // Abaikan sheet seperti 'Sheet1', 'pivot', dll
+        };
+
+        documents = workbook.SheetNames.map((sheetName) => {
+          const docCode = mapSheetToDocCode(sheetName);
+          if (!docCode) return null;
+          return {
+            doc_code: docCode,
+            sheetName: sheetName,
+            start_page: 1,
+            end_page: 1,
+            document_number: `${fileName}_${sheetName}`,
+            vendor: 'EXCEL_SHEET'
+          };
+        }).filter((doc) => doc !== null); // Buang yang tidak ter-mapping
+      }
+    }
 
     const rateInput = parseFloat(process.env.GEMINI_CHEAP_INPUT_RATE);
     const rateOutput = parseFloat(process.env.GEMINI_CHEAP_OUTPUT_RATE);
-    const cheapPrice = (boundaryResult.usage.input_total * rateInput) + (boundaryResult.usage.output * rateOutput);
+    const cheapPrice = (boundaryUsage.input_total * rateInput) + (boundaryUsage.output * rateOutput);
 
     await SourceFileRepositories.updateInitialMetrics(sourceFileId, {
-      input: boundaryResult.usage.input_text,
-      output: boundaryResult.usage.output,
-      ocr: boundaryResult.usage.ocr,
-      price: cheapPrice,
+      input: boundaryUsage.input_text,
+      output: boundaryUsage.output,
+      ocr: boundaryUsage.ocr,
+      price: isNaN(cheapPrice) ? 0 : cheapPrice,
       startedAt: startTime,
-      modelUsed: boundaryResult.model_used
+      modelUsed: modelUsed
     });
 
-    const documents = boundaryResult.documents || [];
     console.log(`[BOUNDARY WORKER] Ditemukan ${documents.length} sub-dokumen.`);
 
     // ==============================================================
     // 2. FASE SPLITTING & BATCHING I/O
     // ==============================================================
-    let masterPdfBuffer = await fs.readFile(absoluteFilePath);
-    let masterPdfDoc = await PDFDocument.load(masterPdfBuffer, { ignoreEncryption: true });
-    const maxPages = masterPdfDoc.getPageCount(); // Diperlukan untuk validasi AI
+    let masterPdfDoc = null;
+    let maxPages = 1;
+
+    if (isPdf) {
+      masterPdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+      maxPages = masterPdfDoc.getPageCount();
+    }
+
 
     const BATCH_SIZE = 10;
 
@@ -93,33 +160,54 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
           'queued'
         );
 
-        // B. Validasi Boundary & Manipulasi PDF
-        const safeStart = Math.max(1, doc.start_page);
-        const safeEnd = Math.min(maxPages, doc.end_page);
+        // B. FILE MANIPULATION (BYPASS UNTUK NON-PDF)
+        let splitFilePath;
 
-        const newPdf = await PDFDocument.create();
-        const pageIndices = Array.from(
-          { length: (safeEnd - safeStart) + 1 },
-          (_, idx) => safeStart - 1 + idx // Base-0 index
-        );
+        if (isPdf) {
+          const safeStart = Math.max(1, doc.start_page);
+          const safeEnd = Math.min(maxPages, doc.end_page);
 
-        const copiedPages = await newPdf.copyPages(masterPdfDoc, pageIndices);
-        copiedPages.forEach((page) => newPdf.addPage(page));
+          let splitPdfBuffer;
 
-        const splitPdfBuffer = Buffer.from(await newPdf.save());
-        const splitFileName = `split-${docRecord.id}-${Date.now()}.pdf`;
+          // Gunakan buffer asli untuk menghindari "Blank Page Bug" pada layer gambar.
+          if (safeStart === 1 && safeEnd === maxPages) {
+            console.log(`[BOUNDARY WORKER] Bypass pdf-lib untuk dokumen utuh: ${doc.doc_code}`);
+            splitPdfBuffer = fileBuffer;
+          } else {
+            // Hanya gunakan pdf-lib jika kita benar-benar harus memotong PDF (misal hal 2-3 dari 10 hal)
+            const newPdf = await PDFDocument.create();
+            const pageIndices = Array.from(
+              { length: (safeEnd - safeStart) + 1 },
+              (_, idx) => safeStart - 1 + idx // Base-0 index
+            );
 
-        // C. Operasi I/O
-        const splitFilePath = await uploadToStorage(splitFileName, splitPdfBuffer, 'application/pdf');
+            const copiedPages = await newPdf.copyPages(masterPdfDoc, pageIndices);
+            copiedPages.forEach((page) => newPdf.addPage(page));
+            splitPdfBuffer = Buffer.from(await newPdf.save());
+          }
+
+          const splitFileName = `split-${docRecord.id}-${Date.now()}.pdf`;
+          splitFilePath = await uploadToStorage(splitFileName, splitPdfBuffer, mimeType);
+        } else {
+          let ext = '.xlsx';
+          if (isImage) {
+            ext = mimeType === 'image/jpeg' ? '.jpg' : '.png';
+          }
+          const splitFileName = `file-${docRecord.id}-${Date.now()}${ext}`;
+          splitFilePath = await uploadToStorage(splitFileName, fileBuffer, mimeType);
+        }
+
+        // C. Update dan Masukkan ke Extraction Queue
         await DocumentRepositories.updateFilePath(docRecord.id, splitFilePath);
-
         const jobTracking = await ExtractionJobRepositories.create(docRecord.id, null, 'queued');
 
         const extractJob = await extractionQueue.add('extract-data', {
           documentId: docRecord.id,
           sourceFileId,
           splitFilePath,
-          docCode: doc.doc_code
+          docCode: doc.doc_code,
+          mimeType: mimeType,
+          sheetName: doc.sheetName
         }, {
           attempts: 3,
           backoff: { type: 'exponential', delay: 5000 },
@@ -137,8 +225,6 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     // 3. CLEANUP
     // ==============================================================
     masterPdfDoc = null;
-    masterPdfBuffer = null;
-
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'processing', progress: 10 });
     console.log(`[BOUNDARY WORKER] Job ${job.id} SELESAI.`);
     console.log('===========================================\n');
@@ -147,7 +233,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
   } catch (error) {
     console.error(`\n[BOUNDARY WORKER] FATAL ERROR PADA JOB ${job.id}:`, error.message);
 
-    await SourceFileRepositories.updateStatus(sourceFileId, 'failed');
+    await SourceFileRepositories.updateStatus(sourceFileId, 'failed', error.message);
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'failed' });
     throw error;
   }

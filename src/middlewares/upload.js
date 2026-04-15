@@ -19,16 +19,24 @@ const storage = multer.diskStorage({
   }
 });
 
+const ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+];
+
 const upload = multer({
   storage: storage,
   limits: {
     fileSize: 100 * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
+    if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new InvariantError('Format file tidak didukung. Saat ini sistem hanya menerima file PDF.'), false);
+      cb(new InvariantError(`Format file tidak didukung. Harap unggah PDF, PNG, atau Excel. Tipe terdeteksi: ${file.mimetype}`), false);
     }
   }
 });

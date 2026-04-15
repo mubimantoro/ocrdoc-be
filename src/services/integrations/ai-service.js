@@ -2,6 +2,7 @@
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import * as xlsx from 'xlsx';
 import { getBoundaryPrompt } from '../../prompts/boundary.js';
 import { ai, MODELS } from '../../config/gemini.js';
 import { getExtractionPrompt } from '../../prompts/extraction.js';
@@ -32,8 +33,8 @@ const extractOcrTokens = (metadata) => {
 /**
  * API Call Level Rendah ke Gemini (Tidak boleh dipanggil langsung untuk file masif)
  */
-export const detectBoundaries = async (fileBuffer, mimeType) => {
-  const prompt = getBoundaryPrompt();
+export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage = 1) => {
+  const prompt = getBoundaryPrompt(absoluteStartPage);
 
   const response = await ai.models.generateContent({
     model: MODELS.CHEAP,
@@ -98,15 +99,28 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
     const chunkBuffer = await newPdf.save();
     console.log(`[AI-SERVICE] Menganalisis chunk: hal ${startPage} - ${endPage}`);
 
-    const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType);
+    // 🚀 PASSING startPage KE FUNGSI DETECT BOUNDARIES!
+    const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage);
 
-    // Normalisasi offset halaman berdasarkan posisi chunk
-    const offsetDocuments = (result.documents || []).map((doc) => ({
-      ...doc,
-      start_page: doc.start_page + startPage - 1,
-      end_page: doc.end_page + startPage - 1
-    }));
+    const chunkDocuments = result.documents || [];
+    const offsetDocuments = chunkDocuments.map((doc) => {
+      let finalStart = doc.start_page;
+      let finalEnd = doc.end_page;
 
+      // Jika AI ngeyel mereturn angka relatif (misal AI return hal 2, padahal kita di Chunk hal 31)
+      if (finalStart < startPage) {
+        finalStart = doc.start_page + startPage - 1;
+        finalEnd = doc.end_page + startPage - 1;
+      }
+
+      return {
+        ...doc,
+        start_page: finalStart,
+        end_page: finalEnd
+      };
+    });
+
+    // 🚀 LANGSUNG PUSH HASIL AI (Tanpa offset manual, karena prompt sudah meminta nilai Absolut)
     rawSegments.push(...offsetDocuments);
 
     totalUsage.input_total += result.usage.input_total;
@@ -116,32 +130,10 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
     totalUsage.total += result.usage.total;
   }
 
-  // 2. LOGIKA GROUPING: Konsolidasi Dokumen Berdasarkan Identitas
-  // Menangani kasus dokumen (misal Invoice) yang terpotong di antara dua chunk
-  const groupedDocuments = rawSegments.reduce((acc, current) => {
-    const existing = acc.find((item) =>
-      item.document_number &&
-      item.document_number.trim() !== '' &&
-      item.document_number === current.document_number &&
-      item.doc_code === current.doc_code
-    );
-
-    if (existing) {
-      // Jika nomor dokumen sama, lebarkan rentang halamannya
-      existing.start_page = Math.min(existing.start_page, current.start_page);
-      existing.end_page = Math.max(existing.end_page, current.end_page);
-    } else {
-      acc.push(current);
-    }
-    return acc;
-  }, []);
-
-  console.log(`[AI-SERVICE] Grouping selesai. Hasil: ${groupedDocuments.length} dokumen logis.`);
-
   return {
-    documents: groupedDocuments,
+    documents: rawSegments, // Kirim mentah ke Queue untuk di-resolve
     usage: totalUsage,
-    model_used: MODELS.CHEAP,
+    model_used: MODELS.FLAGSHIP,
     page_count: totalPages
   };
 };
@@ -150,7 +142,7 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
  * Ekstraksi Data Spesifik (Fase 2)
  * Tidak memerlukan chunking karena inputnya adalah PDF yang sudah displit (1-5 halaman).
  */
-export const extractSmartData = async (fileBuffer, mimeType, docCode) => {
+export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName = null) => {
   let jsonSchema;
 
   try {
@@ -161,11 +153,40 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode) => {
     throw new Error(`Gagal memuat skema JSON untuk dokumen ${docCode}: ${error.message}`);
   }
 
-  const prompt = getExtractionPrompt(jsonSchema);
+  // UNIVERSAL CHAIN OF THOUGHT (CoT) PROMPT
+  const basePrompt = getExtractionPrompt(jsonSchema);
+  const prompt = `${basePrompt}
+  ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
+  ...
+  Terapkan teknik "Chain of Thought". Buat key "_reasoning" di baris paling atas pada output JSON.
+  ATURAN REASONING: WAJIB SANGAT SINGKAT! Maksimal 2 kalimat pendek...
+  ...
+  `;
 
-  const response = await ai.models.generateContent({
-    model: MODELS.FLAGSHIP,
-    contents: [
+  const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+  let geminiContents = [];
+
+  if (isExcel) {
+    const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
+    let excelTextData = '';
+
+    if (sheetName && workbook.Sheets[sheetName]) {
+      console.log(`[AI-SERVICE] Ekstraksi sheet: ${sheetName}`);
+      const csvData = xlsx.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+      excelTextData = `DATA DARI SHEET: ${sheetName}\n${csvData}`;
+    } else {
+      workbook.SheetNames.forEach((name) => {
+        const csvData = xlsx.utils.sheet_to_csv(workbook.Sheets[name]);
+        excelTextData += `\n--- SHEET: ${name} ---\n${csvData}\n`;
+      });
+    }
+    geminiContents = [
+      prompt,
+      `Berikut adalah data mentah Excel (CSV format):\n${excelTextData}`
+    ];
+
+  } else {
+    geminiContents = [
       prompt,
       {
         inlineData: {
@@ -173,26 +194,52 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode) => {
           mimeType: mimeType
         }
       }
-    ],
+    ];
+  }
+
+  const response = await ai.models.generateContent({
+    model: MODELS.FLAGSHIP,
+    contents: geminiContents,
     config: {
       responseMimeType: 'application/json',
-      temperature: 0.1
+      temperature: 0.4,
+      maxOutputTokens: 8192
     }
   });
 
   const parsedData = cleanAIJson(response.text);
+
+  // =================================================================
+  // 🚀 INTERSEPTOR: LOG & HAPUS REASONING
+  // =================================================================
+  // 1. Cetak di log server
+  if (parsedData._reasoning) {
+    console.log(`\n[AI-SERVICE] AI Reasoning: ${parsedData._reasoning}`);
+  } else if (Array.isArray(parsedData) && parsedData[0]?._reasoning) {
+    console.log(`\n[AI-SERVICE] AI Reasoning: ${parsedData[0]._reasoning}`);
+  }
+
+  if (Array.isArray(parsedData)) {
+    parsedData.forEach((item) => delete item._reasoning);
+  } else if (parsedData && typeof parsedData === 'object') {
+    delete parsedData._reasoning;
+  }
+
   const usageMetadata = response.usageMetadata || {};
 
   const totalInput = usageMetadata.promptTokenCount || 0;
   const ocrTokens = extractOcrTokens(usageMetadata);
   const textInput = Math.max(0, totalInput - ocrTokens);
 
+  // console.log('\n[AI-SERVICE] RAW JSON DARI GEMINI:');
+  // console.log(JSON.stringify(parsedData, null, 2));
+
   return {
     data: parsedData,
     usage: {
       input_total: totalInput,
       input_text: textInput,
-      ocr: ocrTokens,
+      ocr: isExcel ? 0 : ocrTokens,
       output: usageMetadata.candidatesTokenCount || 0,
       total: usageMetadata.totalTokenCount || 0
     },
