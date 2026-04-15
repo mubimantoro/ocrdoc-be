@@ -8,6 +8,7 @@ import { ai, MODELS } from '../../config/gemini.js';
 import { getExtractionPrompt } from '../../prompts/extraction.js';
 import { PDFDocument } from 'pdf-lib';
 import { cleanAIJson } from '../../utils/ai-sanitizer.js';
+import { buildDocumentsFromPages } from '../../utils/boundary-resolver.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -33,8 +34,8 @@ const extractOcrTokens = (metadata) => {
 /**
  * API Call Level Rendah ke Gemini (Tidak boleh dipanggil langsung untuk file masif)
  */
-export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage = 1) => {
-  const prompt = getBoundaryPrompt(absoluteStartPage);
+export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, totalPagesInChunk) => {
+  const prompt = getBoundaryPrompt(absoluteStartPage, totalPagesInChunk);
 
   const response = await ai.models.generateContent({
     model: MODELS.CHEAP,
@@ -53,7 +54,7 @@ export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage =
     }
   });
 
-  const parsedText = cleanAIJson(response.text);
+  const parsedResult = cleanAIJson(response.text);
   const usageMetadata = response.usageMetadata || {};
 
   const totalInput = usageMetadata.promptTokenCount || 0;
@@ -61,9 +62,9 @@ export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage =
   const textInput = Math.max(0, totalInput - ocrTokens);
 
   return {
-    documents: parsedText.documents || [],
+    pages: parsedResult.pages || [],
     usage: {
-      input_total: totalInput,
+      input_total: usageMetadata.promptTokenCount,
       input_text: textInput,
       ocr: ocrTokens,
       output: usageMetadata.candidatesTokenCount || 0,
@@ -78,50 +79,48 @@ export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage =
  * Membaca PDF fisik, memecahnya per batas aman (maxPagesPerChunk),
  * mencegah V8 Engine Out of Memory (OOM) dan Bypass Limit Payload API (20MB).
  */
-export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 30) => {
+export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 15) => {
   // 1. Load dokumen utuh ke RAM (Aman karena dijalankan di Background Worker dengan Concurrency 1)
   const pdfBuffer = await fs.readFile(absoluteFilePath);
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
   const totalPages = pdfDoc.getPageCount();
 
-  const rawSegments = [];
+  const allPagesRaw = [];
   const totalUsage = { input_total: 0, input_text: 0, ocr: 0, output: 0, total: 0 };
 
   // 1. Fase Deteksi per Chunk
   for (let startPage = 1; startPage <= totalPages; startPage += maxPagesPerChunk) {
     const endPage = Math.min(startPage + maxPagesPerChunk - 1, totalPages);
+    const pagesInThisChunk = (endPage - startPage) + 1;
 
     const newPdf = await PDFDocument.create();
-    const pageIndices = Array.from({ length: (endPage - startPage) + 1 }, (_, i) => startPage - 1 + i);
+    const pageIndices = Array.from({ length: pagesInThisChunk }, (_, i) => startPage - 1 + i);
     const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
     copiedPages.forEach((page) => newPdf.addPage(page));
 
     const chunkBuffer = await newPdf.save();
-    console.log(`[AI-SERVICE] Menganalisis chunk: hal ${startPage} - ${endPage}`);
+    console.log(`[AI-SERVICE] Tagging Chunk: hal ${startPage} - ${endPage}`);
 
-    // 🚀 PASSING startPage KE FUNGSI DETECT BOUNDARIES!
-    const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage);
+    const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage, pagesInThisChunk);
 
-    const chunkDocuments = result.documents || [];
-    const offsetDocuments = chunkDocuments.map((doc) => {
-      let finalStart = doc.start_page;
-      let finalEnd = doc.end_page;
+    const taggedPages = result.pages || [];
 
-      // Jika AI ngeyel mereturn angka relatif (misal AI return hal 2, padahal kita di Chunk hal 31)
-      if (finalStart < startPage) {
-        finalStart = doc.start_page + startPage - 1;
-        finalEnd = doc.end_page + startPage - 1;
+    for (let p = startPage; p <= endPage; p++) {
+      const foundPage = taggedPages.find((t) => t.absolute_page_number === p);
+      if (foundPage) {
+        allPagesRaw.push(foundPage);
+      } else {
+        console.warn(`[AI-SERVICE] Missing data for page ${p}, applying fallback tag.`);
+        allPagesRaw.push({
+          absolute_page_number: p,
+          is_new_document: false,
+          doc_code: '999',
+          document_number: null,
+          vendor: null,
+          confidence: 0
+        });
       }
-
-      return {
-        ...doc,
-        start_page: finalStart,
-        end_page: finalEnd
-      };
-    });
-
-    // 🚀 LANGSUNG PUSH HASIL AI (Tanpa offset manual, karena prompt sudah meminta nilai Absolut)
-    rawSegments.push(...offsetDocuments);
+    }
 
     totalUsage.input_total += result.usage.input_total;
     totalUsage.input_text += result.usage.input_text;
@@ -130,10 +129,13 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
     totalUsage.total += result.usage.total;
   }
 
+  console.log(`[AI-SERVICE] Menjalankan Aggregator untuk ${allPagesRaw.length} halaman.`);
+  const finalDocuments = buildDocumentsFromPages(allPagesRaw);
+
   return {
-    documents: rawSegments, // Kirim mentah ke Queue untuk di-resolve
+    documents: finalDocuments,
     usage: totalUsage,
-    model_used: MODELS.FLAGSHIP,
+    model_used: MODELS.CHEAP,
     page_count: totalPages
   };
 };
