@@ -416,9 +416,12 @@ paths:
                       $ref: "#/components/schemas/SourceFile"
 
     post:
+      summary: Upload Source File untuk Ekstraksi AI
       tags:
         - Source Files
-      summary: Mengunggah PDF
+      description: |
+        Mengunggah dokumen fisik (PDF, PNG, JPEG, Excel) ke dalam antrean pemrosesan AI.
+        Sistem ini memiliki 2 mode: **Auto-Detection Mode** (Rekomendasi) dan **Manual Override Mode**.
       security:
         - bearerAuth: []
       requestBody:
@@ -427,13 +430,25 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              required:
+                - file
               properties:
                 file:
                   type: string
                   format: binary
-                  description: File PDF maksimal 20MB
+                  description: File dokumen fisik (Max 100MB).
+                doc_type:
+                  type: string
+                  example: "380"
+                  description: |
+                    **[OPSIONAL] KODE OVERRIDE MANUAL**
+                    Kode dokumen (misal: `380` untuk Invoice, `741` untuk Master AWB). Parameter ini digunakan untuk **memaksa (bypass)** AI membaca seluruh file sebagai satu kesatuan dokumen.
+
+                    **PERINGATAN KERAS PENGGUNAAN:**
+                    **JANGAN ISI PARAMETER INI** jika Anda mengunggah file **BATCH / KUMPULAN** (contoh: 1 PDF berisi ratusan halaman gabungan dari berbagai Invoice). Biarkan kosong, dan AI kami akan memotong dan memisahkannya secara otomatis. Jika diisi, AI akan kelebihan beban (Crash) karena mencoba membaca ratusan halaman sekaligus!
+                    **ISI PARAMETER INI** jika file yang diunggah adalah dokumen **TUNGGAL** (1 file = 1 entitas dokumen, meskipun halamannya tebal), dan Anda ingin memastikan AI tidak salah menebak jenis dokumennya.
       responses:
-        "202":
+        "200":
           description: File berhasil diunggah ke antrean
 
   /source-files/{id}:

@@ -5,7 +5,9 @@ class ExtractionResultRepositories {
   /**
    * Membuat rekaman hasil ekstraksi yang terikat pada suatu Job
    */
-  async create(extractionJobId, rawData = null) {
+  async create(extractionJobId, rawData) {
+    const safeJsonString = JSON.stringify(rawData);
+
     const insertQuery = `
       INSERT INTO extraction_results (extraction_job_id, raw_data) 
       VALUES ($1, $2) 
@@ -13,7 +15,7 @@ class ExtractionResultRepositories {
     `;
 
     try {
-      const result = await pool.query(insertQuery, [extractionJobId, rawData]);
+      const result = await pool.query(insertQuery, [extractionJobId, safeJsonString]);
 
       if (!result.rows[0]) {
         throw new InvariantError('Gagal membuat Extraction Result');
@@ -25,10 +27,10 @@ class ExtractionResultRepositories {
       if (error.code === '23505') {
         console.warn(`[RETRY DETECTED] Membersihkan sisa data EAV lama untuk Job ${extractionJobId}...`);
 
-        // 1. WIPE: Hapus induknya.
+        // WIPE: Hapus induknya.
         await pool.query('DELETE FROM extraction_results WHERE extraction_job_id = $1', [extractionJobId]);
 
-        // 2. REPLACE: Masukkan kembali sebagai lembaran baru yang bersih
+        // REPLACE: Masukkan kembali sebagai lembaran baru yang bersih
         const retryResult = await pool.query(insertQuery, [extractionJobId]);
         return retryResult.rows[0];
       }

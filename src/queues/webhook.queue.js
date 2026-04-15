@@ -58,12 +58,19 @@ export const webhookWorker = new Worker('webhook-jobs', async (job) => {
     return { status: 'success', responseData: response.data };
 
   } catch (error) {
-    console.error(`[WEBHOOK] Gagal mengirim: ${error.message}`);
+    // Tangkap detail error dari server klien
+    const clientStatus = error.response ? error.response.status : 'Timeout/Network Error';
+    const clientData = error.response ? JSON.stringify(error.response.data) : error.message;
+    console.error(`[WEBHOOK] Gagal mengirim (Status: ${clientStatus}). Detail: ${clientData}`);
 
     // BullMQ akan otomatis menjalankan flowchart RetryCheck -> Retry.
-    throw new Error(`Koneksi Webhook Gagal: ${error.message}`);
+    throw new Error(`Koneksi Webhook Gagal (Status: ${clientStatus})`);
   }
 }, {
   connection,
-  concurrency: 10
+  concurrency: 10,
+  limiter: {
+    max: 5, // Maksimal 5 request webhook...
+    duration: 1000  // ...dalam rentang 1 detik (5 Requests Per Second)
+  }
 });

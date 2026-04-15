@@ -1,5 +1,0 @@
-{
-  "doc_code": "704",
-  "doc_name": "Master Bill of Lading",
-  "fields": ["master_num", "doc_date", "vessel_name", "voyage_no"]
-}

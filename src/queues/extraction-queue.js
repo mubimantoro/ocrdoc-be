@@ -1,4 +1,3 @@
-
 /* eslint-disable camelcase */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -31,7 +30,7 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
   console.log('\n===========================================');
   console.log(`[EXTRACTION WORKER] Memulai Job ID: ${job.id} | Doc Code: ${job.data.docCode}`);
 
-  const { documentId, sourceFileId, splitFilePath, docCode } = job.data;
+  const { documentId, sourceFileId, splitFilePath, docCode, mimeType, sheetName = null } = job.data;
   let extractionJobRecord;
 
   try {
@@ -56,7 +55,17 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
     socketEmitter.emit('document-status-update', { document_id: documentId, status: 'extracting', message: 'Menganalisis data via AI...' });
 
     const startProcessTime = Date.now();
-    const extracted = await extractSmartData(splitPdfBuffer, 'application/pdf', docCode);
+
+    let actualMimeType = mimeType;
+    if (!actualMimeType) {
+      const lowerPath = splitFilePath.toLowerCase();
+      if (lowerPath.endsWith('.png')) actualMimeType = 'image/png';
+      else if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')) actualMimeType = 'image/jpeg';
+      else if (lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls')) actualMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      else actualMimeType = 'application/pdf';
+    }
+
+    const extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName);
     const durationMs = Date.now() - startProcessTime;
 
     // ==============================================================
@@ -110,7 +119,8 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
 
     const clientWrappers = [
       'invoice_list', 'details_list', 'pl_list', 'packaging',
-      'containers', 'packs', 'packages', 'invoice_list_number'
+      'containers', 'packs', 'packages', 'invoice_list_number',
+      'awb_details', 'mawb', 'hawb', 'shipment'
     ];
 
     if (workingData && typeof workingData === 'object') {
@@ -153,8 +163,14 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
         } else if (Array.isArray(value)) {
           headerFields[key] = JSON.stringify(value);
         } else if (typeof value === 'object') {
-          // Flatten standard object
-          Object.assign(headerFields, value);
+          // Flattening bersarang dengan menyambung key
+          for (const [subKey, subVal] of Object.entries(value)) {
+            if (subVal != null && typeof subVal !== 'object') {
+              headerFields[`${key}_${subKey}`] = String(subVal);
+            } else if (subVal != null && typeof subVal === 'object') {
+              headerFields[`${key}_${subKey}`] = JSON.stringify(subVal);
+            }
+          }
         } else {
           // Kasus primitive biasa
           headerFields[key] = String(value);
@@ -163,7 +179,7 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
 
 
       // A. Bulk Insert Header Fields
-      const excludedKeys = ['doc_code', 'doc_name', 'confidence_score'];
+      const excludedKeys = ['doc_code', 'doc_name', 'confidence_score', '_reasoning'];
 
       const fieldsPayload = Object.entries(headerFields)
         .filter(([key, val]) => val != null && typeof val !== 'object' && !excludedKeys.includes(key))
