@@ -21,7 +21,6 @@ import { extractionQueue } from './extraction-queue.js';
 import ExtractionJobRepositories from '../services/documents/repositories/extraction-job-repositories.js';
 import { detectBoundaries, detectBoundariesChunked } from '../services/integrations/ai-service.js';
 import { uploadToStorage } from '../services/integrations/storage-service.js';
-import { resolveBoundaryOverlaps } from '../utils/boundary-resolver.js';
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -67,20 +66,22 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     } else {
       if (isPdf) {
         console.log('[BOUNDARY WORKER] [PDF MODE] Memulai chunking AI...');
-        const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 30);
+        const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15);
 
-        const rawDocuments = boundaryResult.documents || [];
-        console.log(`[BOUNDARY WORKER] Ditemukan ${rawDocuments.length} dokumen mentah. Menganalisis overlap...`);
-        documents = resolveBoundaryOverlaps(rawDocuments);
+        documents = boundaryResult.documents || [];
+        console.log(`[BOUNDARY WORKER] Ditemukan ${documents.length} dokumen mentah hasil ekstraksi.`);
 
         boundaryUsage = boundaryResult.usage;
         modelUsed = boundaryResult.model_used;
       } else if (isImage) {
         console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar');
-        const boundaryResult = await detectBoundaries(fileBuffer, mimeType);
+        const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1);
 
-        // Paksa start_page dan end_page menjadi 1 karena gambar tidak memiliki multi-halaman
-        documents = (boundaryResult.documents || []).map((doc) => ({ ...doc, start_page: 1, end_page: 1 }));
+        documents = (boundaryResult.pages || []).map((doc) => ({
+          ...doc,
+          start_page: 1,
+          end_page: 1
+        }));
         boundaryUsage = boundaryResult.usage;
         modelUsed = boundaryResult.model_used;
       } else if (isExcel) {
