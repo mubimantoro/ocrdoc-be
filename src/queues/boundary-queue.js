@@ -50,64 +50,67 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     let modelUsed = null;
 
     // ==============================================================
-    // 1. FASE AI IDENTIFICATION (MULTI-FORMAT ROUTING)
+    // 1. FASE AI SEGMENTATION & CLASSIFICATION
     // ==============================================================
     const fileBuffer = await fs.readFile(absoluteFilePath);
 
-    if (manualDocType) {
-      console.log(`[BOUNDARY WORKER] Menggunakan Manual Doc Type: ${manualDocType}`);
-      documents = [{
-        doc_code: manualDocType,
-        start_page: 1,
-        end_page: pageCount,
-        document_number: fileName,
-        vendor: 'MANUAL_UPLOAD'
-      }];
-    } else {
-      if (isPdf) {
-        console.log('[BOUNDARY WORKER] [PDF MODE] Memulai chunking AI...');
-        const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15);
+    if (isPdf) {
+      console.log('[BOUNDARY WORKER] [PDF MODE] Memulai AI Segmentation...');
 
-        documents = boundaryResult.documents || [];
-        console.log(`[BOUNDARY WORKER] Ditemukan ${documents.length} dokumen mentah hasil ekstraksi.`);
+      // 1. AI SEGMENTATION: Selalu jalankan AI untuk memotong PDF (Berapapun tebalnya)
+      const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15);
+      documents = boundaryResult.documents || [];
 
-        boundaryUsage = boundaryResult.usage;
-        modelUsed = boundaryResult.model_used;
-      } else if (isImage) {
-        console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar');
-        const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1);
-
-        documents = (boundaryResult.pages || []).map((doc) => ({
+      // 2. HYBRID OVERRIDE: Jika user menentukan tipe dokumen manual, timpa hasil klasifikasi AI
+      if (manualDocType) {
+        console.log(`[BOUNDARY WORKER] [HYBRID MODE] Menerapkan Override Klasifikasi ke tipe '${manualDocType}' pada ${documents.length} dokumen.`);
+        documents = documents.map((doc) => ({
           ...doc,
-          start_page: 1,
-          end_page: 1
+          doc_code: manualDocType
         }));
-        boundaryUsage = boundaryResult.usage;
-        modelUsed = boundaryResult.model_used;
-      } else if (isExcel) {
-        console.log('[BOUNDARY WORKER] [EXCEL MODE] Memecah Sheets menjadi dokumen terpisah');
-        const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
-
-        const mapSheetToDocCode = (name) => {
-          const n = name.toUpperCase();
-          if (n.includes('INV')) return '380'; // Invoice
-          if (n.includes('PL')) return '217';
-          return null; // Abaikan sheet seperti 'Sheet1', 'pivot', dll
-        };
-
-        documents = workbook.SheetNames.map((sheetName) => {
-          const docCode = mapSheetToDocCode(sheetName);
-          if (!docCode) return null;
-          return {
-            doc_code: docCode,
-            sheetName: sheetName,
-            start_page: 1,
-            end_page: 1,
-            document_number: `${fileName}_${sheetName}`,
-            vendor: 'EXCEL_SHEET'
-          };
-        }).filter((doc) => doc !== null); // Buang yang tidak ter-mapping
       }
+
+      boundaryUsage = boundaryResult.usage;
+      modelUsed = boundaryResult.model_used;
+
+    } else if (isImage) {
+      console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar tunggal...');
+      const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1);
+
+      documents = (boundaryResult.pages || []).map((doc) => ({
+        ...doc,
+        start_page: 1,
+        end_page: 1,
+        doc_code: manualDocType || doc.doc_code // Hybrid Override untuk Gambar
+      }));
+
+      boundaryUsage = boundaryResult.usage;
+      modelUsed = boundaryResult.model_used;
+
+    } else if (isExcel) {
+      console.log('[BOUNDARY WORKER] [EXCEL MODE] Memecah Sheets menjadi dokumen terpisah');
+      const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
+
+      documents = workbook.SheetNames.map((sheetName) => {
+        let docCode = manualDocType; // Hybrid Override
+
+        if (!docCode) {
+          const n = sheetName.toUpperCase();
+          if (n.includes('INV')) docCode = '380';
+          else if (n.includes('PL')) docCode = '217';
+        }
+
+        if (!docCode) return null;
+
+        return {
+          doc_code: docCode,
+          sheetName: sheetName,
+          start_page: 1,
+          end_page: 1,
+          document_number: `${fileName}_${sheetName}`,
+          vendor: 'EXCEL_SHEET'
+        };
+      }).filter((doc) => doc !== null);
     }
 
     const rateInput = parseFloat(process.env.GEMINI_CHEAP_INPUT_RATE);

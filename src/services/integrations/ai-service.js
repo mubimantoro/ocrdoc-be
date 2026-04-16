@@ -210,7 +210,6 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   // =================================================================
   // 🚀 INTERSEPTOR: LOG & HAPUS REASONING
   // =================================================================
-  // 1. Cetak di log server
   if (parsedData._reasoning) {
     console.log(`\n[AI-SERVICE] AI Reasoning: ${parsedData._reasoning}`);
   } else if (Array.isArray(parsedData) && parsedData[0]?._reasoning) {
@@ -221,6 +220,49 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     parsedData.forEach((item) => delete item._reasoning);
   } else if (parsedData && typeof parsedData === 'object') {
     delete parsedData._reasoning;
+  }
+
+  // =================================================================
+  // 🚀 POST-PROCESSING: UNIVERSAL FORWARD-FILL (O(N))
+  // Deteksi array dinamis dan isi baris kosong dengan memori baris sebelumnya
+  // =================================================================
+  const fillableFields = ['date_of_invoice', 'invoice_number', 'hs_code', 'origin_criteria'];
+
+  const findTabularArray = (data) => {
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === 'object') {
+      for (const value of Object.values(data)) {
+        if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
+          return value;
+        }
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          for (const subValue of Object.values(value)) {
+            if (Array.isArray(subValue) && subValue.length > 0 && typeof subValue[0] === 'object') {
+              return subValue;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  const targetArray = findTabularArray(parsedData);
+
+  if (targetArray && targetArray.length > 0) {
+    const memory = {};
+
+    targetArray.forEach((row) => {
+      if (row && typeof row === 'object') {
+        fillableFields.forEach((field) => {
+          if (row[field] !== undefined && row[field] !== null && row[field] !== '') {
+            memory[field] = row[field]; // Update ingatan
+          } else if (memory[field] !== undefined) {
+            row[field] = memory[field]; // Tarik dari ingatan (Forward-Fill / Ditto)
+          }
+        });
+      }
+    });
   }
 
   const usageMetadata = response.usageMetadata || {};

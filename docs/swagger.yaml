@@ -1,7 +1,7 @@
 openapi: 3.0.0
 info:
   title: Document Extraction API
-  description: AI-assisted Document Parser untuk PT. UNIAIR INDOTAMA CARGO.
+  description: AI-assisted Document Parser
   version: 1.0.0
 servers:
   - url: http://localhost:3000/api
@@ -141,7 +141,7 @@ tags:
   - name: Users
     description: Endpoint manajemen pengguna (Khusus Admin)
   - name: Source Files
-    description: Endpoint upload dan tracking PDF sumber
+    description: Endpoint upload, tracking, dan retry PDF sumber
   - name: Documents
     description: Endpoint hasil ekstraksi EAV dan format Raw
 
@@ -421,7 +421,9 @@ paths:
         - Source Files
       description: |
         Mengunggah dokumen fisik (PDF, PNG, JPEG, Excel) ke dalam antrean pemrosesan AI.
-        Sistem ini memiliki 2 mode: **Auto-Detection Mode** dan **Manual Override Mode**.
+        Sistem ini mengadopsi **Hybrid Approach** (Manual Classification, AI Segmentation).
+        - Jika `doc_type` dikosongkan, AI akan mendeteksi tipe dokumen secara otomatis.
+        - Jika `doc_type` diisi, AI tetap akan mencari koordinat batas halaman (Segmentation), namun hasil klasifikasinya akan ditimpa (Override) dengan pilihan Anda.
       security:
         - bearerAuth: []
       requestBody:
@@ -439,6 +441,7 @@ paths:
                   description: File dokumen fisik (Max 100MB).
                 doc_type:
                   type: string
+                  description: "Kode tipe dokumen untuk klasifikasi"
                   example: "380"
       responses:
         "200":
@@ -460,7 +463,41 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Berhasil
+          description: Berhasil mendapatkan detail
+
+  /source-files/{id}/retry:
+    post:
+      tags:
+        - Source Files
+      summary: Retry pemrosesan file yang gagal
+      description: |
+        Mengulang kembali pemrosesan file yang berstatus `failed` atau `pending_review`.
+        Proses akan diulang dari Fase 1 (Boundary Detection). Anda dapat menyertakan `doc_type` untuk menerapkan Hybrid Override pada percobaan ulang ini.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                doc_type:
+                  type: string
+                  description: "(Opsional) Kode tipe dokumen untuk memaksa klasifikasi pada saat retry."
+                  example: "380"
+      responses:
+        "200":
+          description: Pipeline pemrosesan berhasil di-restart
+        "400":
+          description: Bad Request (File tidak berstatus failed/pending_review atau file fisik hilang)
 
   # ==========================================
   # 3. DOCUMENTS ENDPOINTS

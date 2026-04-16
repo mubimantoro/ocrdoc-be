@@ -157,7 +157,7 @@ export const retry = async (req, res, next) => {
     // Reset state di Database
     await SourceFileRepositories.resetForRetry(req.params.id);
 
-    const manualDocType = req.body.doc_type || sf.manual_doc_type || null;
+    const manualDocType = req.body.doc_type || null;
 
 
     await boundaryQueue.add('detect-boundary', {
