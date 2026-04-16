@@ -7,6 +7,6 @@ export const ai = new GoogleGenAI({
 });
 
 export const MODELS = {
-  CHEAP: 'gemini-2.5-flash-lite',
+  CHEAP: 'gemini-3.1-flash-lite-preview',
   FLAGSHIP: 'gemini-3-flash-preview'
 };
