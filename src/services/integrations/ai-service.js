@@ -75,12 +75,10 @@ export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, 
 };
 
 /**
- * ENTERPRISE ARCHITECTURE: Chunked Boundary Detection
- * Membaca PDF fisik, memecahnya per batas aman (maxPagesPerChunk),
- * mencegah V8 Engine Out of Memory (OOM) dan Bypass Limit Payload API (20MB).
+ * ENTERPRISE ARCHITECTURE: Sequential Chunked Boundary Detection
+ * O(N/K) Space Complexity. Menghindari Context Bleed pada Vision LLM.
  */
 export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 15) => {
-  // 1. Load dokumen utuh ke RAM (Aman karena dijalankan di Background Worker dengan Concurrency 1)
   const pdfBuffer = await fs.readFile(absoluteFilePath);
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
   const totalPages = pdfDoc.getPageCount();
@@ -88,7 +86,6 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
   const allPagesRaw = [];
   const totalUsage = { input_total: 0, input_text: 0, ocr: 0, output: 0, total: 0 };
 
-  // 1. Fase Deteksi per Chunk
   for (let startPage = 1; startPage <= totalPages; startPage += maxPagesPerChunk) {
     const endPage = Math.min(startPage + maxPagesPerChunk - 1, totalPages);
     const pagesInThisChunk = (endPage - startPage) + 1;
@@ -102,9 +99,9 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
     console.log(`[AI-SERVICE] Tagging Chunk: hal ${startPage} - ${endPage}`);
 
     const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage, pagesInThisChunk);
-
     const taggedPages = result.pages || [];
 
+    // Defensive Loop: Mencegah hilangnya halaman akibat LLM Omission
     for (let p = startPage; p <= endPage; p++) {
       const foundPage = taggedPages.find((t) => t.absolute_page_number === p);
       if (foundPage) {
@@ -129,7 +126,7 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
     totalUsage.total += result.usage.total;
   }
 
-  console.log(`[AI-SERVICE] Menjalankan Aggregator untuk ${allPagesRaw.length} halaman.`);
+  // O(N) Deterministic Aggregation
   const finalDocuments = buildDocumentsFromPages(allPagesRaw);
 
   return {
@@ -139,7 +136,6 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
     page_count: totalPages
   };
 };
-
 /**
  * Ekstraksi Data Spesifik (Fase 2)
  * Tidak memerlukan chunking karena inputnya adalah PDF yang sudah displit (1-5 halaman).
