@@ -9,6 +9,7 @@ import response from '../../../utils/response.js';
 import SourceFileRepositories from '../repositories/source-file-repositories.js';
 import { formatSourceFileResponse } from '../../../utils/mapper/source-file.mapper.js';
 import { boundaryQueue } from '../../../queues/boundary-queue.js';
+import path from 'path';
 
 /**
  * ==========================================
@@ -138,18 +139,44 @@ export const getById = async (req, res, next) => {
 export const retry = async (req, res, next) => {
   try {
     const sf = await SourceFileRepositories.findById(req.params.id);
-    if (!['failed', 'pending_review'].includes(sf.status))
+    if (!['failed', 'pending_review'].includes(sf.status)) {
       return next(new InvariantError('Hanya file \'failed\' atau \'pending_review\' yang bisa di-retry'));
+    }
 
+    // Resolusi Path Absolut (Mencegah Path Traversal / Broken Link)
+    const absoluteFilePath = path.resolve(process.cwd(), sf.file_path);
+
+    // Validasi Eksistensi File Fisik (Defensive Programming)
+    // Jangan lempar ke antrean jika file sudah terhapus oleh OS/Cron Job
+    try {
+      await fs.access(absoluteFilePath);
+    } catch (err) {
+      return next(new InvariantError('File fisik tidak ditemukan di server. Tidak dapat melakukan retry.'));
+    }
+
+    // Reset state di Database
     await SourceFileRepositories.resetForRetry(req.params.id);
 
+    const manualDocType = req.body.doc_type || sf.manual_doc_type || null;
 
-    await extractionQueue.add(
-      'process-document',
-      { sourceFileId: sf.id, filePath: sf.file_path, isRetry: true }
-    );
+
+    await boundaryQueue.add('detect-boundary', {
+      sourceFileId: sf.id,
+      absoluteFilePath: absoluteFilePath,
+      fileName: sf.file_name,
+      mimeType: sf.mime_type,
+      pageCount: sf.page_count,
+      manualDocType: manualDocType,
+      isRetry: true // Flag khusus untuk log analitik worker
+    }, {
+      removeOnComplete: true,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 }
+    });
 
     const updated = await SourceFileRepositories.findById(req.params.id);
-    return response(res, 200, 'Retry berhasil dimasukkan ke antrian', updated);
-  } catch (err) { next(err); }
+    return response(res, 200, 'Pipeline pemrosesan berhasil di-restart', updated);
+  } catch (err) {
+    next(err);
+  }
 };
