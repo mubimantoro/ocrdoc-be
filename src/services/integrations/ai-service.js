@@ -146,6 +146,10 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
  * FASE 2 - Ekstraksi Data Spesifik (Smart Data Extraction)
  * Arsitektur Hybrid: Map-Reduce Batching (Excel) + Self-Healing Loop
  */
+/**
+ * FASE 2 - Ekstraksi Data Spesifik (Smart Data Extraction)
+ * Arsitektur Master: Omni-Channel Map Reduce (PDF & Excel) + Self-Healing
+ */
 export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName = null) => {
   let jsonSchema;
 
@@ -160,15 +164,17 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   const basePrompt = getExtractionPrompt(jsonSchema);
   const prompt = `${basePrompt}
   ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
-  1. Terapkan teknik "Chain of Thought". Buat key "_reasoning" di baris paling atas pada output JSON. (Maks 2 kalimat).
-  2. CRITICAL WARNING: Pastikan output JSON tertutup sempurna ( } atau ] ) di bagian akhir.
-  3. TOKEN ECONOMY (SANGAT PENTING): Untuk menghemat token dan mencegah truncation, JANGAN PERNAH menulis key yang nilainya kosong/null (terutama di dalam array items atau details_list). Jika data tidak ada di dokumen, hapus/abaikan saja key tersebut dari JSON. Sistem backend kami yang akan mengurus sisanya.
+  1. Terapkan teknik "Chain of Thought". Buat key "_reasoning" di baris paling atas pada output JSON.
+  2. ATURAN REASONING: WAJIB SANGAT SINGKAT! Maksimal 2 kalimat pendek.
+  3. CRITICAL WARNING: Pastikan output JSON tertutup sempurna ( } atau ] ) di bagian akhir.
+  4. TOKEN ECONOMY (SANGAT PENTING): Untuk menghemat token dan mencegah truncation, JANGAN PERNAH menulis key yang nilainya kosong/null di dalam array. Jika data tidak ada di dokumen fisik, hapus/abaikan saja key tersebut. Sistem backend kami yang akan memformat ulang nanti.
   `;
 
   const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+  const isPdf = mimeType === 'application/pdf';
 
   // ==============================================================
-  // HELPER 1: SHAPE-BASED ARRAY FINDER
+  // 🚀 HELPER 1: SHAPE-BASED ARRAY FINDER
   // ==============================================================
   const findTabularArray = (data) => {
     if (Array.isArray(data)) return data;
@@ -186,7 +192,43 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   };
 
   // ==============================================================
-  // HELPER 2: THE SELF-HEALING ENGINE (ANTI-TRUNCATION)
+  // 🚀 HELPER 2: ENTERPRISE DEEP MERGER (Aman untuk Nested Invoice List)
+  // ==============================================================
+  const mergeArraysDeep = (master, batch) => {
+    if (!master || typeof master !== 'object' || !batch || typeof batch !== 'object') return;
+
+    Object.keys(batch).forEach((key) => {
+      const batchVal = batch[key];
+
+      if (Array.isArray(batchVal)) {
+        if (!master[key]) master[key] = [];
+
+        // Penanganan Khusus untuk Nested Wrapper (seperti invoice_list.items)
+        if (key === 'invoice_list' && master[key].length > 0 && batchVal.length > 0) {
+          if (batchVal[0].items && Array.isArray(batchVal[0].items)) {
+            if (!master[key][0].items) master[key][0].items = [];
+            master[key][0].items.push(...batchVal[0].items);
+          }
+        } else {
+          // Merge Normal untuk Array murni seperti details_list atau banks
+          master[key].push(...batchVal);
+        }
+      }
+      else if (batchVal !== null && typeof batchVal === 'object') {
+        if (!master[key] || typeof master[key] !== 'object') master[key] = {};
+        mergeArraysDeep(master[key], batchVal);
+      }
+      // Jaga Header: Jangan timpa data header yang sudah ada di master dengan data null dari batch
+      else if (batchVal !== null && batchVal !== '') {
+        if (!master[key] || master[key] === '' || master[key] === null) {
+          master[key] = batchVal;
+        }
+      }
+    });
+  };
+
+  // ==============================================================
+  // 🚀 HELPER 3: THE SELF-HEALING ENGINE
   // ==============================================================
   const callGeminiWithRetry = async (geminiContents, maxRetries = 3) => {
     let attempt = 0;
@@ -198,19 +240,14 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
           contents: geminiContents,
           config: {
             responseMimeType: 'application/json',
-            temperature: 0.1 + (attempt * 0.1), // Jittering temperature
+            temperature: 0.1 + (attempt * 0.1),
             maxOutputTokens: 8192
           }
         });
-
-        const parsedData = cleanAIJson(response.text);
-        return { parsedData, usageMetadata: response.usageMetadata || {} };
-
+        return { parsedData: cleanAIJson(response.text), usageMetadata: response.usageMetadata || {} };
       } catch (error) {
-        console.warn(`\n[AI-SERVICE] JSON Truncation Error pada Attempt ${attempt}/${maxRetries}: ${error.message}`);
-        if (attempt >= maxRetries) {
-          throw new Error(`AI Gagal mereturn JSON valid setelah ${maxRetries} percobaan. Error: ${error.message}`);
-        }
+        console.warn(`\n[AI-SERVICE] ⚠️ JSON Truncation Error pada Attempt ${attempt}/${maxRetries}: ${error.message}`);
+        if (attempt >= maxRetries) throw new Error(`AI Gagal mereturn JSON valid: ${error.message}`);
         await new Promise((res) => setTimeout(res, 2000));
       }
     }
@@ -227,10 +264,8 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
     const targetSheetName = sheetName || workbook.SheetNames[0];
     const csvData = xlsx.utils.sheet_to_csv(workbook.Sheets[targetSheetName]);
-
     const csvLines = csvData.split('\n').filter((line) => line.replace(/,/g, '').trim() !== '');
 
-    // Anchor Header Konteks
     const ANCHOR_LINES_COUNT = Math.min(20, csvLines.length);
     const anchorCsv = csvLines.slice(0, ANCHOR_LINES_COUNT).join('\n');
     const dataCsvLines = csvLines.slice(ANCHOR_LINES_COUNT);
@@ -247,46 +282,68 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       }
     }
 
-    console.log(`[AI-SERVICE] Excel dipecah menjadi ${batches.length} batch requests.`);
     let masterJson = null;
-
     for (let i = 0; i < batches.length; i++) {
       console.log(`[AI-SERVICE] Memproses Excel Batch ${i + 1}/${batches.length}...`);
-      const geminiContents = [prompt, `Berikut adalah data mentah Excel (CSV format):\n${batches[i]}`];
-
-      // Panggil AI dengan perlindungan Self-Healing
-      const { parsedData: batchJson, usageMetadata } = await callGeminiWithRetry(geminiContents);
+      const { parsedData: batchJson, usageMetadata } = await callGeminiWithRetry([prompt, `Berikut adalah data mentah Excel:\n${batches[i]}`]);
 
       totalUsage.input_total += usageMetadata.promptTokenCount || 0;
       totalUsage.output += usageMetadata.candidatesTokenCount || 0;
       totalUsage.total += usageMetadata.totalTokenCount || 0;
 
-      if (i === 0) {
-        masterJson = batchJson;
-      } else {
-        const masterArray = findTabularArray(masterJson);
-        const batchArray = findTabularArray(batchJson);
-        if (masterArray && batchArray) {
-          masterArray.push(...batchArray);
-        }
-      }
+      if (i === 0) masterJson = batchJson;
+      else mergeArraysDeep(masterJson, batchJson);
     }
     finalParsedData = masterJson;
 
   }
   // ==============================================================
-  // JALUR 2: PDF / IMAGE PROCESSING NORMAL
+  // JALUR 2: PDF PAGE-BY-PAGE MAP-REDUCE (ANTI-TRUNCATION)
+  // ==============================================================
+  else if (isPdf) {
+    console.log('\n[AI-SERVICE] [PDF MODE] Menerapkan Page-by-Page Map Reduce...');
+    const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+    const numPages = pdfDoc.getPageCount();
+
+    let masterJson = null;
+
+    for (let i = 0; i < numPages; i++) {
+      console.log(`[AI-SERVICE] Memproses PDF Halaman ${i + 1}/${numPages}...`);
+
+      const singlePdf = await PDFDocument.create();
+      const [copiedPage] = await singlePdf.copyPages(pdfDoc, [i]);
+      singlePdf.addPage(copiedPage);
+      const singlePdfBytes = await singlePdf.save();
+
+      // Instruksi tambahan untuk halaman 2 ke atas
+      const pagePrompt = i === 0
+        ? prompt
+        : `${prompt}\nCRITICAL: Ini adalah HALAMAN LANJUTAN. FOKUS mengekstrak lanjutan list/tabel item dan masukkan ke array yang sesuai (abaikan header jika tidak ada).`;
+
+      const { parsedData: pageJson, usageMetadata } = await callGeminiWithRetry([
+        pagePrompt,
+        { inlineData: { data: Buffer.from(singlePdfBytes).toString('base64'), mimeType: 'application/pdf' } }
+      ]);
+
+      totalUsage.input_total += usageMetadata.promptTokenCount || 0;
+      totalUsage.output += usageMetadata.candidatesTokenCount || 0;
+      totalUsage.ocr += extractOcrTokens(usageMetadata);
+      totalUsage.total += usageMetadata.totalTokenCount || 0;
+
+      if (i === 0) masterJson = pageJson;
+      else mergeArraysDeep(masterJson, pageJson);
+    }
+    finalParsedData = masterJson;
+  }
+  // ==============================================================
+  // JALUR 3: IMAGE PROCESSING (Normal 1-Shot)
   // ==============================================================
   else {
-    const geminiContents = [
+    const { parsedData: imgJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: mimeType } }
-    ];
-
-    // Panggil AI dengan perlindungan Self-Healing
-    const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry(geminiContents);
-    finalParsedData = pdfJson;
-
+    ]);
+    finalParsedData = imgJson;
     totalUsage.input_total = usageMetadata.promptTokenCount || 0;
     totalUsage.output = usageMetadata.candidatesTokenCount || 0;
     totalUsage.ocr = extractOcrTokens(usageMetadata);
@@ -296,15 +353,15 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   totalUsage.input_text = Math.max(0, totalUsage.input_total - totalUsage.ocr);
 
   // =================================================================
-  // POST-PROCESSING & INTERCEPTORS
+  // 🚀 POST-PROCESSING 1: REASONING CLEANUP
   // =================================================================
-  if (finalParsedData._reasoning) console.log(`[AI-SERVICE] AI Reasoning: ${finalParsedData._reasoning}`);
-  else if (Array.isArray(finalParsedData) && finalParsedData[0]?._reasoning) console.log(`[AI-SERVICE] AI Reasoning: ${finalParsedData[0]._reasoning}`);
-
+  if (finalParsedData && finalParsedData._reasoning) console.log(`[AI-SERVICE] AI Reasoning: ${finalParsedData._reasoning}`);
   if (Array.isArray(finalParsedData)) finalParsedData.forEach((item) => delete item._reasoning);
   else if (finalParsedData && typeof finalParsedData === 'object') delete finalParsedData._reasoning;
 
-  // UNIVERSAL FORWARD-FILL (O(N))
+  // =================================================================
+  // 🚀 POST-PROCESSING 2: UNIVERSAL FORWARD-FILL (O(N))
+  // =================================================================
   const fillableFields = ['date_of_invoice', 'invoice_number', 'hs_code', 'origin_criteria'];
   const targetArray = findTabularArray(finalParsedData);
 
@@ -324,13 +381,12 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   }
 
   // =================================================================
-  // DOCUMENT-SPECIFIC BUSINESS RULES (RULE ENGINE)
-  // Menjalankan request spesifik PM (seperti propagasi currency) sesuai docCode
+  // 🚀 POST-PROCESSING 3: DOCUMENT-SPECIFIC BUSINESS RULES (RULE ENGINE)
   // =================================================================
   applyBusinessRules(docCode, finalParsedData);
 
   // =================================================================
-  // POST-PROCESSING: SCHEMA CONTRACT ENFORCER
+  // 🚀 POST-PROCESSING 4: SCHEMA CONTRACT ENFORCER
   // =================================================================
   const strictParsedData = enforceSchemaStrictness(finalParsedData, jsonSchema);
 
