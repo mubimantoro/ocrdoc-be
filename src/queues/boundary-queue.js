@@ -1,4 +1,4 @@
-
+/* eslint-disable no-unused-vars */
 /* eslint-disable camelcase */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -98,6 +98,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
           const n = sheetName.toUpperCase();
           if (n.includes('INV')) docCode = '380';
           else if (n.includes('PL')) docCode = '217';
+          else if (n.includes('CIPL')) docCode = '001';
         }
 
         if (!docCode) return null;
