@@ -28,6 +28,11 @@ class SourceFileRepositories {
       query += ` AND status = $${values.length}`;
     }
 
+    if (filters.search) {
+      values.push(`%${filters.search}%`);
+      query += ` AND file_name ILIKE $${values.length}`;
+    }
+
     const result = await pool.query(query, values);
     return parseInt(result.rows[0].count, 10);
   }
@@ -44,6 +49,11 @@ class SourceFileRepositories {
     if (filters.status) {
       values.push(filters.status);
       query += ` AND sf.status = $${values.length}`;
+    }
+
+    if (filters.search) {
+      values.push(`%${filters.search}%`);
+      query += ` AND sf.file_name ILIKE $${values.length}`;
     }
 
     values.push(limit, offset);

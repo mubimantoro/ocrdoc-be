@@ -95,11 +95,12 @@ export const getAll = async (req, res, next) => {
 
     const filters = {};
     if (req.query.status) filters.status = req.query.status;
+    if (req.query.search) filters.search = req.query.search;
 
     // 2. Eksekusi Query Paralel (Optimasi Performa)
     const [totalItems, rawData] = await Promise.all([
-      SourceFileRepositories.countAll(),
-      SourceFileRepositories.findAll(limit, offset)
+      SourceFileRepositories.countAll(filters),
+      SourceFileRepositories.findAll(limit, offset, filters)
     ]);
 
     const formattedData = rawData.map((record) => formatSourceFileResponse(record));
