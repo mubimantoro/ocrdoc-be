@@ -322,19 +322,17 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       else mergeArraysDeep(masterJson, batchJson);
     }
     finalParsedData = masterJson;
-
   }
-  // ==============================================================
-  // JALUR 2: PDF PROCESSING
+  // JALUR 2: PDF PROCESSING (OPTIMIZED FOR CIPL)
   // ==============================================================
   else if (isPdf) {
     const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
     const numPages = pdfDoc.getPageCount();
 
-    // 🚀 OPTIMIZATION: ONE-SHOT PROCESSING UNTUK DOKUMEN PENDEK (<= 5 Halaman) KHUSUS CIPL
-    // Sangat efektif untuk CIPL karena AI bisa melihat Invoice & PL secara bersamaan (Konteks penuh)
-    if (docCode === '001' && numPages <= 5) {
-      console.log(`\n[AI-SERVICE] [PDF MODE] One-Shot Processing untuk CIPL ${numPages} halaman (Efisiensi Tinggi)...`);
+    // 🚀 OPTIMIZATION 1: HIGH-CAP ONE-SHOT (UP TO 15 PAGES)
+    // Gemini Flash sanggup handle 15 hal sekaligus. Lebih akurat karena konteks utuh.
+    if (docCode === '001' && numPages <= 15) {
+      console.log(`\n[AI-SERVICE] [PDF MODE] High-Cap One-Shot untuk CIPL ${numPages} halaman (Akurasi Maksimal)...`);
       const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry([
         prompt,
         { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
@@ -345,10 +343,10 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       totalUsage.ocr = extractOcrTokens(usageMetadata);
       totalUsage.total = usageMetadata.totalTokenCount || 0;
       await debugLog(docCode, 'one_shot_pdf_output', finalParsedData);
-    }
-    // 🚀 JALUR 3: MAP-REDUCE UNTUK DOKUMEN SUPER PANJANG (> 5 Halaman)
+    } 
+    // 🚀 OPTIMIZATION 2: CONTEXT-AWARE SEQUENTIAL EXTRACTION (> 15 PAGES)
     else {
-      console.log('\n[AI-SERVICE] [PDF MODE] Menerapkan Page-by-Page Map Reduce (Anti-Truncation)...');
+      console.log(`\n[AI-SERVICE] [PDF MODE] Menerapkan Context-Aware Sequential Extraction (${numPages} hal)...`);
       let masterJson = null;
 
       for (let i = 0; i < numPages; i++) {
@@ -359,9 +357,14 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
         singlePdf.addPage(copiedPage);
         const singlePdfBytes = await singlePdf.save();
 
+        // JAHIT KONTEKS: Kirimkan hasil halaman sebelumnya agar AI tidak amnesia
+        const contextSummary = masterJson 
+          ? `\nPREVIOUS DATA CONTEXT (Sudah diekstrak):\n- Invoice/PL Number: ${masterJson.invoice_number || masterJson.packing_list_number}\n- Last Extracted Items Count: ${masterJson.invoice_list?.[0]?.items?.length || 0}\n`
+          : '';
+
         const pagePrompt = i === 0
           ? prompt
-          : `${prompt}\nCRITICAL: Ini adalah HALAMAN LANJUTAN. FOKUS mengekstrak lanjutan list/tabel item dan masukkan ke array yang sesuai (abaikan header jika tidak ada).`;
+          : `${prompt}\n${contextSummary}\nCRITICAL: Ini adalah HALAMAN LANJUTAN. Gunakan konteks di atas agar tidak menduplikasi data. FOKUS menjahit detail part number ke item yang relevan atau menambah baris baru jika berbeda.`;
 
         const { parsedData: pageJson, usageMetadata } = await callGeminiWithRetry([
           pagePrompt,
@@ -379,6 +382,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       }
       finalParsedData = masterJson;
       await debugLog(docCode, 'merged_pdf_output', finalParsedData);
+    }
     }
   }
   // ==============================================================
