@@ -21,6 +21,12 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 - 888: Pengecualian Perijinan | 957: SNI/SPB | 959: PI
 - 000: Cukai | 999: Lainnya
 
+## ATURAN KHUSUS CIPL (001)
+- CIPL (Commercial Invoice & Packing List) sering terdiri dari halaman Invoice yang diikuti oleh halaman Packing List.
+- Jika menemukan halaman Invoice dan Packing List yang berkaitan (misal: Vendor sama, atau Nomor Referensi/PO/Invoice sama), KELOMPOKKAN KEDUANYA SEBAGAI KODE 001.
+- WAJIB set is_new_document: false pada halaman Packing List tersebut karena ia adalah kelanjutan dari Invoice, meskipun layout-nya berubah drastis atau halamannya mengulang dari 1.
+- Pastikan document_number yang direturn SAMA PERSIS (gunakan nomor Invoice sebagai identifier utama) untuk semua halaman dalam satu set CIPL agar sistem tidak memecahnya.
+
 ## ATURAN KHUSUS AWB (740) vs MASTER AWB (741)
 - Ada teks "House Airway Bill" / "HAB" → KODE 740.
 - Judul "Airway Bill" saja → Jika Shipper Maskapai ("Air", "Airlines") → 741. Jika Freight Forwarder → 740.

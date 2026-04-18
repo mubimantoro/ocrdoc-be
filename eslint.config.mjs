@@ -5,7 +5,13 @@ import { defineConfig } from "eslint/config";
 
 export default defineConfig([
   daStyle,
-    { files: ['**/*.js'], languageOptions: { sourceType: 'module' } },
+    { 
+      files: ['**/*.js'], 
+      languageOptions: { sourceType: 'module' },
+      rules: {
+        'linebreak-style': 'off'
+      }
+    },
   { languageOptions: { globals: globals.node } },
   pluginJs.configs.recommended,
 ]);
