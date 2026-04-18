@@ -343,7 +343,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       totalUsage.ocr = extractOcrTokens(usageMetadata);
       totalUsage.total = usageMetadata.totalTokenCount || 0;
       await debugLog(docCode, 'one_shot_pdf_output', finalParsedData);
-    } 
+    }
     // 🚀 OPTIMIZATION 2: CONTEXT-AWARE SEQUENTIAL EXTRACTION (> 15 PAGES)
     else {
       console.log(`\n[AI-SERVICE] [PDF MODE] Menerapkan Context-Aware Sequential Extraction (${numPages} hal)...`);
@@ -358,7 +358,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
         const singlePdfBytes = await singlePdf.save();
 
         // JAHIT KONTEKS: Kirimkan hasil halaman sebelumnya agar AI tidak amnesia
-        const contextSummary = masterJson 
+        const contextSummary = masterJson
           ? `\nPREVIOUS DATA CONTEXT (Sudah diekstrak):\n- Invoice/PL Number: ${masterJson.invoice_number || masterJson.packing_list_number}\n- Last Extracted Items Count: ${masterJson.invoice_list?.[0]?.items?.length || 0}\n`
           : '';
 
@@ -382,7 +382,6 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       }
       finalParsedData = masterJson;
       await debugLog(docCode, 'merged_pdf_output', finalParsedData);
-    }
     }
   }
   // ==============================================================
