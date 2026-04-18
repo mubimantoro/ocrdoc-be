@@ -17,6 +17,33 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
+ * DEBUGGER KHUSUS CIPL (001)
+ * Akan menyimpan raw output AI ke folder debug_logs di root project
+ */
+const debugLog = async (docCode, stepName, data) => {
+  if (docCode !== '001' && docCode !== 'debug') return; // Batasi hanya CIPL agar tidak spam
+  try {
+    const debugDir = path.join(process.cwd(), 'debug_logs');
+    await fs.mkdir(debugDir, { recursive: true });
+
+    // Auto-cleanup: Hapus log lama saat proses baru dimulai (halaman 1 atau one-shot)
+    if (stepName.includes('page_1') || stepName === 'one_shot_pdf_output') {
+      const files = await fs.readdir(debugDir);
+      for (const file of files) {
+        if (file.endsWith('.json')) await fs.unlink(path.join(debugDir, file));
+      }
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = path.join(debugDir, `cipl_${timestamp}_${stepName}.json`);
+    await fs.writeFile(filename, JSON.stringify(data, null, 2));
+    console.log(`[DEBUG] Log tersimpan: ${filename}`);
+  } catch (err) {
+    console.error('[DEBUG] Gagal save log:', err.message);
+  }
+};
+
+/**
  * Ekstraksi token spesifik OCR dari metadata Gemini
  * Time Complexity: O(N) dimana N adalah jumlah modality details
  */
@@ -298,42 +325,61 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
 
   }
   // ==============================================================
-  // JALUR 2: PDF PAGE-BY-PAGE MAP-REDUCE (ANTI-TRUNCATION)
+  // JALUR 2: PDF PROCESSING
   // ==============================================================
   else if (isPdf) {
-    console.log('\n[AI-SERVICE] [PDF MODE] Menerapkan Page-by-Page Map Reduce...');
     const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
     const numPages = pdfDoc.getPageCount();
 
-    let masterJson = null;
-
-    for (let i = 0; i < numPages; i++) {
-      console.log(`[AI-SERVICE] Memproses PDF Halaman ${i + 1}/${numPages}...`);
-
-      const singlePdf = await PDFDocument.create();
-      const [copiedPage] = await singlePdf.copyPages(pdfDoc, [i]);
-      singlePdf.addPage(copiedPage);
-      const singlePdfBytes = await singlePdf.save();
-
-      // Instruksi tambahan untuk halaman 2 ke atas
-      const pagePrompt = i === 0
-        ? prompt
-        : `${prompt}\nCRITICAL: Ini adalah HALAMAN LANJUTAN. FOKUS mengekstrak lanjutan list/tabel item dan masukkan ke array yang sesuai (abaikan header jika tidak ada).`;
-
-      const { parsedData: pageJson, usageMetadata } = await callGeminiWithRetry([
-        pagePrompt,
-        { inlineData: { data: Buffer.from(singlePdfBytes).toString('base64'), mimeType: 'application/pdf' } }
+    // 🚀 OPTIMIZATION: ONE-SHOT PROCESSING UNTUK DOKUMEN PENDEK (<= 5 Halaman) KHUSUS CIPL
+    // Sangat efektif untuk CIPL karena AI bisa melihat Invoice & PL secara bersamaan (Konteks penuh)
+    if (docCode === '001' && numPages <= 5) {
+      console.log(`\n[AI-SERVICE] [PDF MODE] One-Shot Processing untuk CIPL ${numPages} halaman (Efisiensi Tinggi)...`);
+      const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry([
+        prompt,
+        { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
       ]);
-
-      totalUsage.input_total += usageMetadata.promptTokenCount || 0;
-      totalUsage.output += usageMetadata.candidatesTokenCount || 0;
-      totalUsage.ocr += extractOcrTokens(usageMetadata);
-      totalUsage.total += usageMetadata.totalTokenCount || 0;
-
-      if (i === 0) masterJson = pageJson;
-      else mergeArraysDeep(masterJson, pageJson);
+      finalParsedData = pdfJson;
+      totalUsage.input_total = usageMetadata.promptTokenCount || 0;
+      totalUsage.output = usageMetadata.candidatesTokenCount || 0;
+      totalUsage.ocr = extractOcrTokens(usageMetadata);
+      totalUsage.total = usageMetadata.totalTokenCount || 0;
+      await debugLog(docCode, 'one_shot_pdf_output', finalParsedData);
     }
-    finalParsedData = masterJson;
+    // 🚀 JALUR 3: MAP-REDUCE UNTUK DOKUMEN SUPER PANJANG (> 5 Halaman)
+    else {
+      console.log('\n[AI-SERVICE] [PDF MODE] Menerapkan Page-by-Page Map Reduce (Anti-Truncation)...');
+      let masterJson = null;
+
+      for (let i = 0; i < numPages; i++) {
+        console.log(`[AI-SERVICE] Memproses PDF Halaman ${i + 1}/${numPages}...`);
+
+        const singlePdf = await PDFDocument.create();
+        const [copiedPage] = await singlePdf.copyPages(pdfDoc, [i]);
+        singlePdf.addPage(copiedPage);
+        const singlePdfBytes = await singlePdf.save();
+
+        const pagePrompt = i === 0
+          ? prompt
+          : `${prompt}\nCRITICAL: Ini adalah HALAMAN LANJUTAN. FOKUS mengekstrak lanjutan list/tabel item dan masukkan ke array yang sesuai (abaikan header jika tidak ada).`;
+
+        const { parsedData: pageJson, usageMetadata } = await callGeminiWithRetry([
+          pagePrompt,
+          { inlineData: { data: Buffer.from(singlePdfBytes).toString('base64'), mimeType: 'application/pdf' } }
+        ]);
+        await debugLog(docCode, `raw_pdf_page_${i + 1}`, pageJson);
+
+        totalUsage.input_total += usageMetadata.promptTokenCount || 0;
+        totalUsage.output += usageMetadata.candidatesTokenCount || 0;
+        totalUsage.ocr += extractOcrTokens(usageMetadata);
+        totalUsage.total += usageMetadata.totalTokenCount || 0;
+
+        if (i === 0) masterJson = pageJson;
+        else mergeArraysDeep(masterJson, pageJson);
+      }
+      finalParsedData = masterJson;
+      await debugLog(docCode, 'merged_pdf_output', finalParsedData);
+    }
   }
   // ==============================================================
   // JALUR 3: IMAGE PROCESSING (Normal 1-Shot)
@@ -389,6 +435,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   // 🚀 POST-PROCESSING 4: SCHEMA CONTRACT ENFORCER
   // =================================================================
   const strictParsedData = enforceSchemaStrictness(finalParsedData, jsonSchema);
+  await debugLog(docCode, 'final_strict_schema_output', strictParsedData);
 
   return {
     data: strictParsedData,

@@ -4,3 +4,4 @@ node_modules
 migration.sql
 uploads
 src/seeders
+debug_logs/
