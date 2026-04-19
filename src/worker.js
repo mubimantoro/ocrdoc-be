@@ -2,12 +2,13 @@ import 'dotenv/config';
 import { boundaryWorker } from './queues/boundary-queue.js';
 import { extractionWorker } from './queues/extraction-queue.js';
 import { webhookQueue } from './queues/webhook.queue.js';
+import { maintenanceWorker, initMaintenanceJobs } from './queues/maintenance-queue.js';
 
 console.log('===================================================');
 console.log('SYSTEM STARTING: Enterprise Background Worker');
 console.log('===================================================');
 
-const workers = [boundaryWorker, extractionWorker, webhookQueue];
+const workers = [boundaryWorker, extractionWorker, webhookQueue, maintenanceWorker];
 
 console.log('[WORKER] Node.js terhubung ke Redis. Semua worker aktif memantau antrean...');
 
@@ -70,3 +71,6 @@ process.on('unhandledRejection', (reason) => {
   console.error('\n[WORKER] FATAL UNHANDLED REJECTION:', reason);
   gracefulShutdown('UNHANDLED_REJECTION');
 });
+
+// Jalankan Scheduler Maintenance
+initMaintenanceJobs();
