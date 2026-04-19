@@ -84,14 +84,14 @@ class SourceFileRepositories {
   /**
    * Mengupdate status pemrosesan file (misal: 'processing', 'completed', 'error')
    */
-  async updateStatus(id, status) {
+  async updateStatus(id, status, errorMessage = null) {
     const query = `
       UPDATE source_files 
-      SET status = $1, updated_at = CURRENT_TIMESTAMP 
-      WHERE id = $2 
+      SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $3 
       RETURNING id;
     `;
-    const result = await pool.query(query, [status, id]);
+    const result = await pool.query(query, [status, errorMessage, id]);
 
     if (!result.rows.length) {
       throw new NotFoundError(`Gagal update status: Source file dengan ID ${id} tidak ditemukan.`);
