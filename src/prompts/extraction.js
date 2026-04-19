@@ -1,8 +1,10 @@
 import { instructions as ciplInstructions } from './documents/001.js';
+import { instructions as plInstructions } from './documents/217.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '001': ciplInstructions,
+  '217': plInstructions,
   // Tambahkan kode dokumen lain di sini jika sudah ada promptnya
 };
 
@@ -25,7 +27,7 @@ ATURAN INTERPRETASI BLUEPRINT (CARA MERAKIT OUTPUT JSON):
 ${specificInstructions}
 
 ATURAN OUTPUT KETAT (PENGHEMATAN TOKEN):
-1. MINIFIED JSON: Output HARUS 1 baris (minified), tanpa newline (\\n) atau indentasi. Spasi hanya boleh di dalam string. Ini KRITIKAL untuk menghemat token!
+1. PRETTY-PRINTED JSON: Gunakan indentasi dan baris baru (\n) agar struktur JSON tetap terjaga dan tidak terputus di tengah jalan.
 2. CLEAN JSON: HANYA output 1 JSON object valid. DILARANG menggunakan blok markdown (\`\`\`json) atau menambahkan teks komentar apapun.
 3. TOKEN DIET (KHUSUS ARRAY): Khusus di dalam array of objects ("items", "pl_list", dll), JANGAN menyertakan property/key yang bernilai null. Hilangkan saja key tersebut dari object untuk menghemat output token.
 4. ANTI-REPETISI: JANGAN menyalin/mengulang data statis parent (seperti vendor_name, origin_country) ke setiap baris item jika datanya sama. Cukup taruh di header.
@@ -46,6 +48,7 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 2. ATURAN REASONING: WAJIB SANGAT SINGKAT! Maksimal 2 kalimat pendek.
 3. CRITICAL WARNING: Pastikan output JSON tertutup sempurna ( } atau ] ) di bagian akhir.
 4. TOKEN ECONOMY (SANGAT PENTING): Untuk mencegah JSON terpotong (truncation), JANGAN PERNAH menulis key yang nilainya null, kosong (""), atau array kosong ([]) di dalam objek array (seperti "items"). Jika data tidak ada di dokumen fisik, WAJIB hapus/abaikan key tersebut dari objek.
+5. DENSE TABLE RULE: Jika dokumen memiliki tabel yang sangat panjang (padat), ringkaslah "description" produk hanya pada informasi intinya saja (abaikan spesifikasi teknis yang sangat detail) untuk memastikan semua baris item dapat terambil tanpa terpotong.
 `;
 };
 

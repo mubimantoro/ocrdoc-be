@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { ai, MODELS } from '../../../config/gemini.js';
+import { ai, MODELS, safetySettings } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
 
 /**
@@ -107,9 +107,16 @@ export const callGeminiWithRetry = async (geminiContents, maxRetries = 3) => {
         config: {
           responseMimeType: 'application/json',
           temperature: 0.1 + (attempt * 0.1),
-          maxOutputTokens: 8192
+          maxOutputTokens: 8192,
+          safetySettings
         }
       });
+
+      const candidate = response.candidates?.[0];
+      if (candidate?.finishReason !== 'STOP') {
+        console.warn(`[AI-SERVICE] ⚠️ AI berhenti dengan alasan: ${candidate?.finishReason}`);
+      }
+
       return { parsedData: cleanAIJson(response.text), usageMetadata: response.usageMetadata || {} };
     } catch (error) {
       console.warn(`\n[AI-SERVICE] ⚠️ JSON Truncation Error pada Attempt ${attempt}/${maxRetries}: ${error.message}`);
@@ -140,4 +147,44 @@ export const applyForwardFill = (finalParsedData) => {
       }
     });
   }
+};
+
+/**
+ * DECOMPRESSOR: Pemetaan balik key yang disingkat (Compressed) ke format asli skema
+ */
+export const decompressPlData = (data) => {
+  if (!data) return;
+  const keyMap = {
+    desc: 'description',
+    qty: 'quantity',
+    nw: 'net_weight',
+    gw: 'gross_weight',
+    ms: 'measurement',
+    pq: 'packaging_qty',
+    pu: 'packaging_unit',
+    qu: 'quantity_unit',
+    up: 'unit_price',
+    am: 'amount',
+    cur: 'currency',
+    pt: 'packaging_type_item'
+  };
+
+  const recursiveDecompress = (obj) => {
+    if (Array.isArray(obj)) {
+      obj.forEach(recursiveDecompress);
+    } else if (obj !== null && typeof obj === 'object') {
+      Object.keys(obj).forEach((key) => {
+        if (keyMap[key]) {
+          obj[keyMap[key]] = obj[key];
+          delete obj[key];
+        }
+        // Rekursif untuk nested objects (seperti items di dalam pl_list)
+        if (typeof obj[keyMap[key] || key] === 'object') {
+          recursiveDecompress(obj[keyMap[key] || key]);
+        }
+      });
+    }
+  };
+
+  recursiveDecompress(data);
 };
