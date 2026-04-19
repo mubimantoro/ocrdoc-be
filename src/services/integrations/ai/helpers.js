@@ -208,6 +208,6 @@ export const parseItemsCsv = (data, docCode) => {
     processList(data['invoice_list'], ['number', 'prod_number', 'description', 'quantity', 'hs_code', 'uom', 'origin', 'origin_code', 'vendor_name', 'vendor_number', 'unit_price', 'amount', 'currency', 'packaging_type_item']);
     processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
   } else if (docCode === '217') {
-    processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'packaging_unit']);
+    processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
   }
 };

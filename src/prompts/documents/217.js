@@ -18,25 +18,32 @@ Hasilkan JSON dengan struktur berikut. Gunakan 'items_csv' (String) untuk mengga
 
 2. FORMAT items_csv (KRITIKAL & SCALABLE):
 Jangan gunakan array of objects. Gunakan String CSV dengan pemisah pipa (|).
-Urutan kolom: number|description|quantity|quantity_unit|net_weight|gross_weight|measurement|packaging_qty|packaging_unit
+Urutan kolom (WAJIB): number|description|quantity|quantity_unit|origin|brand|net_weight|gross_weight|amount|unit_price|measurement|packaging_qty|packaging_unit
 * Aturan Penulisan:
   1. Tanpa header. Pisahkan antar barang HANYA dengan newline (\n).
   2. DILARANG KERAS menggunakan tanda pipa (|) atau newline (\n) di dalam teks data (Ganti dengan spasi).
   3. Ekstrak description SEPENUHNYA tanpa disingkat atau dipotong.
 
-3. HEURISTIK EKSTRAKSI ITEM (GLOBAL ACCEPTANCE):
-Fokus pada karakteristik data, bukan format tabel.
-- Syarat Baris Valid: Baris data WAJIB memiliki setidaknya 2 komponen utama yang saling terikat: "Deskripsi Barang" (teks) DAN "Kuantitas Pengiriman" (angka aktual).
-- Isolasi Konteks (Anti-Duplikasi): 
-  a. ABAIKAN tabel referensi, kamus kode, atau tabel statistik (biasanya berisi daftar produk dan HS Code/Kode Pajak TETAPI tidak memiliki angka kuantitas pengiriman untuk tiap item).
-  b. ABAIKAN baris rekapitulasi/agregasi (mengandung kata "Total", "Subtotal", "Summary").
-  c. Jika ada pengulangan daftar barang di halaman akhir yang hanya bersifat rangkuman informasi (tanpa metrik logistik lengkap seperti berat/dimensi yang ada di halaman utama), ambil hanya dari tabel utama yang paling komprehensif.
+3. PANDUAN PEMETAAN FIELD (HEURISTIK):
+- brand: Nama merek/prinsipal. Cari di baris, atau inferensi dari kop dokumen/logo jika berlaku global.
+- amount: Total nilai harga baris tersebut (qty x unit_price).
+- number: Angka urut (1, 2, 3), SKU, Kode Artikel, atau Part Number.
+- origin: Negara asal (Made in, COO, Country of Origin).
+- quantity: Jumlah aktual barang fisik (angka murni).
+- net_weight: Berat bersih tanpa kemasan (NW, Net, Net Wt).
+- gross_weight: Berat kotor dengan kemasan (GW, Gross, Gross Wt).
+- unit_price: Harga per satuan barang.
+- description: Teks deskriptif nama/tipe/spesifikasi barang.
+- measurement: Dimensi (PxLxT) atau volume. PERTAHANKAN karakter 'x' atau '*' (contoh: 26x22x22).
+- packaging_qty: Jumlah kemasan terluar (jumlah koli/karton/palet).
+- quantity_unit: Satuan jumlah fisik (Pcs, Set, Ea). Inferensi dari header/total jika tidak ada di baris.
+- packaging_unit: Jenis kemasan terluar (Carton, Box, Pallet, CTN, PLT).
 
-4. PETA LOKASI DATA UMUM:
-- pl_list.invoice_number & invoice_date: Identifikasi angka atau teks yang berdekatan dengan keyword "Invoice", "Shipment", "Reference", atau "Ref No" di bagian kop dokumen.
-- Metadata Root: Data dimensi total, berat total (N.W/G.W), dan informasi kemasan (Pallet/Carton) biasanya berada di bagian terbawah dokumen setelah rincian barang.
+4. HEURISTIK EKSTRAKSI ITEM:
+- Syarat Baris Valid: WAJIB memiliki "Deskripsi Barang" DAN "Kuantitas Pengiriman".
+- Isolasi Konteks: ABAIKAN tabel referensi/statistik tanpa kuantitas nyata, ABAIKAN baris rekapitulasi (Total/Subtotal).
 
 5. DATA SANITIZATION:
-- Hilangkan simbol satuan (kg, pcs, cbm, kgs) dari field numerik. Satuan harus masuk ke kolom unit masing-masing.
-- Pastikan angka menggunakan format Number standar tanpa pemisah ribuan koma (misal: 1250.50, BUKAN 1,250.50).
+- Hilangkan simbol satuan (kg, pcs, cbm) dari field numerik.
+- Pastikan angka menggunakan format Number tanpa pemisah ribuan koma (misal: 1250.50).
 `;
