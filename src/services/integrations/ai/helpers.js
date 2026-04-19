@@ -74,10 +74,25 @@ export const mergeArraysDeep = (master, batch) => {
     if (Array.isArray(batchVal)) {
       if (!master[key]) master[key] = [];
 
-      if (key === 'invoice_list' && master[key].length > 0 && batchVal.length > 0) {
-        if (batchVal[0].items && Array.isArray(batchVal[0].items)) {
-          if (!master[key][0].items) master[key][0].items = [];
-          master[key][0].items.push(...batchVal[0].items);
+      // Khusus CIPL/PL: Jika ini adalah list invoice/PL, kita coba merge rinciannya
+      if ((key === 'invoice_list' || key === 'pl_list') && master[key].length > 0 && batchVal.length > 0) {
+        const masterEntry = master[key][0];
+        const batchEntry = batchVal[0];
+
+        // Merge Array items (jika format lama)
+        if (batchEntry.items && Array.isArray(batchEntry.items)) {
+          if (!masterEntry.items) masterEntry.items = [];
+          masterEntry.items.push(...batchEntry.items);
+        }
+
+        // Merge String items_csv (Strategi Baru)
+        if (batchEntry['items_csv'] && typeof batchEntry['items_csv'] === 'string') {
+          if (!masterEntry['items_csv']) {
+            masterEntry['items_csv'] = batchEntry['items_csv'];
+          } else {
+            // Gabungkan dengan newline agar tidak menempel
+            masterEntry['items_csv'] = `${masterEntry['items_csv'].trim()}\n${batchEntry['items_csv'].trim()}`;
+          }
         }
       } else {
         master[key].push(...batchVal);
@@ -86,7 +101,10 @@ export const mergeArraysDeep = (master, batch) => {
       if (!master[key] || typeof master[key] !== 'object') master[key] = {};
       mergeArraysDeep(master[key], batchVal);
     } else if (batchVal !== null && batchVal !== '') {
-      if (!master[key] || master[key] === '' || master[key] === null) {
+      // Jika field adalah items_csv di tingkat object (bukan di dalam array), merge juga
+      if (key === 'items_csv' && typeof batchVal === 'string' && master[key]) {
+        master[key] = `${master[key].trim()}\n${batchVal.trim()}`;
+      } else if (!master[key] || master[key] === '' || master[key] === null) {
         master[key] = batchVal;
       }
     }
@@ -96,7 +114,7 @@ export const mergeArraysDeep = (master, batch) => {
 /**
  * THE SELF-HEALING ENGINE
  */
-export const callGeminiWithRetry = async (geminiContents, maxRetries = 3) => {
+export const callGeminiWithRetry = async (geminiContents, maxRetries = 2) => {
   let attempt = 0;
   while (attempt < maxRetries) {
     try {
@@ -107,7 +125,7 @@ export const callGeminiWithRetry = async (geminiContents, maxRetries = 3) => {
         config: {
           responseMimeType: 'application/json',
           temperature: 0.1 + (attempt * 0.1),
-          maxOutputTokens: 8192,
+          maxOutputTokens: 20480,
           safetySettings
         }
       });
@@ -129,64 +147,67 @@ export const callGeminiWithRetry = async (geminiContents, maxRetries = 3) => {
 /**
  * UNIVERSAL FORWARD-FILL
  */
-export const applyForwardFill = (finalParsedData) => {
+export const applyForwardFill = (data) => {
   const fillableFields = ['date_of_invoice', 'invoice_number', 'hs_code', 'origin_criteria'];
-  const targetArray = findTabularArray(finalParsedData);
 
-  if (targetArray && targetArray.length > 0) {
-    const memory = {};
-    targetArray.forEach((row) => {
-      if (row && typeof row === 'object') {
-        fillableFields.forEach((field) => {
-          if (row[field] !== undefined && row[field] !== null && row[field] !== '') {
-            memory[field] = row[field];
-          } else if (memory[field] !== undefined) {
-            row[field] = memory[field];
-          }
-        });
-      }
-    });
-  }
-};
-
-/**
- * DECOMPRESSOR: Pemetaan balik key yang disingkat (Compressed) ke format asli skema
- */
-export const decompressPlData = (data) => {
-  if (!data) return;
-  const keyMap = {
-    desc: 'description',
-    qty: 'quantity',
-    nw: 'net_weight',
-    gw: 'gross_weight',
-    ms: 'measurement',
-    pq: 'packaging_qty',
-    pu: 'packaging_unit',
-    qu: 'quantity_unit',
-    up: 'unit_price',
-    am: 'amount',
-    cur: 'currency',
-    pt: 'packaging_type_item',
-    ori: 'origin',
-    oc: 'origin_code'
-  };
-
-  const recursiveDecompress = (obj) => {
+  const recursiveFill = (obj) => {
     if (Array.isArray(obj)) {
-      obj.forEach(recursiveDecompress);
+      if (obj.length > 0 && typeof obj[0] === 'object' && !obj[0].items) {
+        // Ini adalah array baris barang (flat)
+        const memory = {};
+        obj.forEach((row) => {
+          fillableFields.forEach((field) => {
+            if (row[field] !== undefined && row[field] !== null && row[field] !== '') {
+              memory[field] = row[field];
+            } else if (memory[field] !== undefined) {
+              row[field] = memory[field];
+            }
+          });
+        });
+      } else {
+        // Rekursif ke dalam elemen array
+        obj.forEach(recursiveFill);
+      }
     } else if (obj !== null && typeof obj === 'object') {
-      Object.keys(obj).forEach((key) => {
-        if (keyMap[key]) {
-          obj[keyMap[key]] = obj[key];
-          delete obj[key];
-        }
-        // Rekursif untuk nested objects (seperti items di dalam pl_list)
-        if (typeof obj[keyMap[key] || key] === 'object') {
-          recursiveDecompress(obj[keyMap[key] || key]);
-        }
-      });
+      Object.values(obj).forEach(recursiveFill);
     }
   };
 
-  recursiveDecompress(data);
+  recursiveFill(data);
+};
+
+export const parseItemsCsv = (data, docCode) => {
+  if (!data) return;
+
+  const processList = (listArray, keys) => {
+    if (!Array.isArray(listArray)) return;
+    listArray.forEach((entry) => {
+      if (entry['items_csv'] && typeof entry['items_csv'] === 'string') {
+        const lines = entry['items_csv'].split('\n').filter((l) => l.trim() !== '');
+        entry.items = lines.map((line) => {
+          const parts = line.split('|');
+          const obj = {};
+          keys.forEach((k, i) => {
+            let val = parts[i] ? parts[i].trim() : null;
+            if (val === '') val = null;
+            else if (['quantity', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'unit_price', 'amount'].includes(k) && val) {
+              // Hapus semua karakter selain angka, titik, dan minus
+              const cleanedStr = val.toString().replace(/[^\d.-]/g, '');
+              val = cleanedStr !== '' ? Number(cleanedStr) : null;
+            }
+            obj[k] = val;
+          });
+          return obj;
+        });
+        delete entry['items_csv'];
+      }
+    });
+  };
+
+  if (docCode === '001') {
+    processList(data['invoice_list'], ['number', 'prod_number', 'description', 'quantity', 'hs_code', 'uom', 'origin', 'origin_code', 'vendor_name', 'vendor_number', 'unit_price', 'amount', 'currency', 'packaging_type_item']);
+    processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
+  } else if (docCode === '217') {
+    processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'packaging_unit']);
+  }
 };

@@ -6,7 +6,7 @@ import { enforceSchemaStrictness } from '../../../utils/schema-enforcer.js';
 import { applyBusinessRules } from '../../../utils/business-rules.js';
 import { ai, MODELS } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
-import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, decompressPlData, debugLog } from './helpers.js';
+import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, parseItemsCsv, debugLog } from './helpers.js';
 import { processExcelExtraction } from './handlers/excel.js';
 import { processPdfExtraction } from './handlers/pdf.js';
 
@@ -115,9 +115,9 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     delete finalParsedData._reasoning;
   }
 
-  // POST-PROCESSING: Decompress (Short Keys to Long Keys)
+  // POST-PROCESSING: Decompress CSV format to Array of Objects
   if (docCode === '217' || docCode === '001') {
-    decompressPlData(finalParsedData);
+    parseItemsCsv(finalParsedData, docCode);
   }
 
   // POST-PROCESSING: Universal Forward-Fill
