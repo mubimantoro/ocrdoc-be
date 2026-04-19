@@ -166,7 +166,9 @@ export const decompressPlData = (data) => {
     up: 'unit_price',
     am: 'amount',
     cur: 'currency',
-    pt: 'packaging_type_item'
+    pt: 'packaging_type_item',
+    ori: 'origin',
+    oc: 'origin_code'
   };
 
   const recursiveDecompress = (obj) => {
