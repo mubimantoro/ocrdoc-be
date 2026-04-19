@@ -34,6 +34,11 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 - Ada teks "House Airway Bill" / "HAB" → KODE 740.
 - Judul "Airway Bill" saja → Jika Shipper Maskapai ("Air", "Airlines") → 741. Jika Freight Forwarder → 740.
 
+## ATURAN KHUSUS LAPORAN SURVEYOR (958)
+- Ditandai secara eksplisit dengan judul "Laporan Surveyor", "Report of Verification", atau "Surveyor Report".
+- Biasanya diterbitkan oleh instansi pemeriksa resmi seperti KSO Sucofindo - Surveyor Indonesia.
+- Seringkali memuat identifier unik seperti Nomor LS (LS No.) dan Nomor VO (VO No.).
+
 ## OUTPUT JSON STRICT SCHEMA (TANPA MARKDOWN)
 Contoh jika absoluteStartPage = 7 dan totalPagesInChunk = 3 (Berisi 1 lbr AWB dan 2 lbr Invoice lanjutan):
 {
