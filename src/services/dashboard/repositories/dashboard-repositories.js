@@ -21,17 +21,15 @@ class DashboardRepositories {
           WHERE status = 'processing'
         ) AS currently_processing,
 
-        -- 4. Files yang BERHASIL selesai hari ini
+        -- 4. TOTAL Files yang BERHASIL (Seluruh Waktu)
         COUNT(*) FILTER (
           WHERE status = 'completed'
-            AND DATE(completed_at AT TIME ZONE 'Asia/Jakarta') = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Jakarta')::date
-        ) AS completed_today,
+        ) AS completed_total,
 
-        -- 5. Files yang GAGAL hari ini
+        -- 5. TOTAL Files yang GAGAL (Seluruh Waktu)
         COUNT(*) FILTER (
           WHERE status = 'failed'
-            AND DATE(updated_at AT TIME ZONE 'Asia/Jakarta') = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Jakarta')::date
-        ) AS failed_today
+        ) AS failed_total
 
       FROM source_files
     `);
@@ -46,8 +44,8 @@ class DashboardRepositories {
         currently_processing: stats.currently_processing
       },
       jobs: {
-        completed_today: stats.completed_today,
-        failed_today: stats.failed_today
+        completed_today: stats.completed_total,
+        failed_today: stats.failed_total
       }
     };
   }
