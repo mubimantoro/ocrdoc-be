@@ -1,10 +1,12 @@
 import { instructions as ciplInstructions } from './documents/001.js';
 import { instructions as plInstructions } from './documents/217.js';
+import { instructions as lsInstructions } from './documents/958.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '001': ciplInstructions,
   '217': plInstructions,
+  '958': lsInstructions,
   // Tambahkan kode dokumen lain di sini jika sudah ada promptnya
 };
 
