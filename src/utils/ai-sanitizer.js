@@ -4,9 +4,27 @@
 const repairTruncatedJson = (jsonString) => {
   let repaired = jsonString.trim();
 
-  // 1. Cek apakah berakhir dengan koma yang menggantung, hapus jika ada
+  /**
+   * 🛡️ ADVANCED CLEANUP
+   * Jika JSON terpotong di tengah jalan, biasanya berakhir dengan:
+   * - Tanda koma menggantung: ... "key": "val",
+   * - Tanda kutip menggantung: ... "key": "v
+   * - Nama key menggantung: ... "ke
+   * Kita hapus karakter-karakter ini sampai menemukan batas data yang valid.
+   */
+  const isSafeEnding = (str) => /["}\]]|true|false|null|\d$/.test(str);
+
+  // Bersihkan karakter di ujung secara mundur sampai menemukan "Safe Ending"
+  // Limit 100 iterasi untuk mencegah infinite loop (walaupun hampir tidak mungkin)
+  let safetyCounter = 0;
+  while (repaired.length > 0 && !isSafeEnding(repaired) && safetyCounter < 100) {
+    repaired = repaired.slice(0, -1).trim();
+    safetyCounter++;
+  }
+
+  // Jika setelah dibersihkan berakhir dengan koma, hapus komanya agar valid
   if (repaired.endsWith(',')) {
-    repaired = repaired.slice(0, -1);
+    repaired = repaired.slice(0, -1).trim();
   }
 
   // 2. Hitung jumlah kurung yang terbuka dan tertutup
@@ -16,10 +34,10 @@ const repairTruncatedJson = (jsonString) => {
   const closeBrackets = (repaired.match(/\]/g) || []).length;
 
   // 3. Tambahkan penutup yang kurang secara sekuensial
-  // Catatan: Ini adalah perbaikan "Best Effort"
   let diffBraces = openBraces - closeBraces;
   let diffBrackets = openBrackets - closeBrackets;
 
+  // Tutup array dulu (jika ada) baru tutup object
   while (diffBrackets > 0) {
     repaired += ']';
     diffBrackets--;

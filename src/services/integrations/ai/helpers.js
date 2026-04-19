@@ -141,3 +141,39 @@ export const applyForwardFill = (finalParsedData) => {
     });
   }
 };
+
+/**
+ * DECOMPRESSOR: Pemetaan balik key yang disingkat (Compressed) ke format asli skema
+ */
+export const decompressPlData = (data) => {
+  if (!data) return;
+  const keyMap = {
+    desc: 'description',
+    qty: 'quantity',
+    nw: 'net_weight',
+    gw: 'gross_weight',
+    ms: 'measurement',
+    pq: 'packaging_qty',
+    pu: 'packaging_unit',
+    qu: 'quantity_unit'
+  };
+
+  const recursiveDecompress = (obj) => {
+    if (Array.isArray(obj)) {
+      obj.forEach(recursiveDecompress);
+    } else if (obj !== null && typeof obj === 'object') {
+      Object.keys(obj).forEach((key) => {
+        if (keyMap[key]) {
+          obj[keyMap[key]] = obj[key];
+          delete obj[key];
+        }
+        // Rekursif untuk nested objects (seperti items di dalam pl_list)
+        if (typeof obj[keyMap[key] || key] === 'object') {
+          recursiveDecompress(obj[keyMap[key] || key]);
+        }
+      });
+    }
+  };
+
+  recursiveDecompress(data);
+};

@@ -1,8 +1,10 @@
 import { instructions as ciplInstructions } from './documents/001.js';
+import { instructions as plInstructions } from './documents/217.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '001': ciplInstructions,
+  '217': plInstructions,
   // Tambahkan kode dokumen lain di sini jika sudah ada promptnya
 };
 
@@ -46,6 +48,7 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 2. ATURAN REASONING: WAJIB SANGAT SINGKAT! Maksimal 2 kalimat pendek.
 3. CRITICAL WARNING: Pastikan output JSON tertutup sempurna ( } atau ] ) di bagian akhir.
 4. TOKEN ECONOMY (SANGAT PENTING): Untuk mencegah JSON terpotong (truncation), JANGAN PERNAH menulis key yang nilainya null, kosong (""), atau array kosong ([]) di dalam objek array (seperti "items"). Jika data tidak ada di dokumen fisik, WAJIB hapus/abaikan key tersebut dari objek.
+5. DENSE TABLE RULE: Jika dokumen memiliki tabel yang sangat panjang (padat), ringkaslah "description" produk hanya pada informasi intinya saja (abaikan spesifikasi teknis yang sangat detail) untuk memastikan semua baris item dapat terambil tanpa terpotong.
 `;
 };
 
