@@ -27,7 +27,7 @@ ATURAN INTERPRETASI BLUEPRINT (CARA MERAKIT OUTPUT JSON):
 ${specificInstructions}
 
 ATURAN OUTPUT KETAT (PENGHEMATAN TOKEN):
-1. MINIFIED JSON: Output HARUS 1 baris (minified), tanpa newline (\\n) atau indentasi. Spasi hanya boleh di dalam string. Ini KRITIKAL untuk menghemat token!
+1. PRETTY-PRINTED JSON: Gunakan indentasi dan baris baru (\n) agar struktur JSON tetap terjaga dan tidak terputus di tengah jalan.
 2. CLEAN JSON: HANYA output 1 JSON object valid. DILARANG menggunakan blok markdown (\`\`\`json) atau menambahkan teks komentar apapun.
 3. TOKEN DIET (KHUSUS ARRAY): Khusus di dalam array of objects ("items", "pl_list", dll), JANGAN menyertakan property/key yang bernilai null. Hilangkan saja key tersebut dari object untuk menghemat output token.
 4. ANTI-REPETISI: JANGAN menyalin/mengulang data statis parent (seperti vendor_name, origin_country) ke setiap baris item jika datanya sama. Cukup taruh di header.

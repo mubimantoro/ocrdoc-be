@@ -12,7 +12,7 @@ const repairTruncatedJson = (jsonString) => {
    * - Nama key menggantung: ... "ke
    * Kita hapus karakter-karakter ini sampai menemukan batas data yang valid.
    */
-  const isSafeEnding = (str) => /["}\]]|true|false|null|\d$/.test(str);
+  const isSafeEnding = (str) => /[}\]]|true|false|null|\d$/.test(str);
 
   // Bersihkan karakter di ujung secara mundur sampai menemukan "Safe Ending"
   // Limit 100 iterasi untuk mencegah infinite loop (walaupun hampir tidak mungkin)
