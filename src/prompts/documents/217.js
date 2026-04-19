@@ -22,7 +22,7 @@ Urutan kolom: number|description|quantity|quantity_unit|net_weight|gross_weight|
 * Aturan Penulisan:
   1. Tanpa header. Pisahkan antar barang HANYA dengan newline (\n).
   2. DILARANG KERAS menggunakan tanda pipa (|) atau newline (\n) di dalam teks data (Ganti dengan spasi).
-  3. Ringkas description max 30 karakter.
+  3. Ekstrak description SEPENUHNYA tanpa disingkat atau dipotong.
 
 3. HEURISTIK EKSTRAKSI ITEM (GLOBAL ACCEPTANCE):
 Fokus pada karakteristik data, bukan format tabel.

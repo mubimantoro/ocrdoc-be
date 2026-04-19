@@ -29,7 +29,7 @@ Hasilkan JSON dengan struktur berikut. Gunakan 'items_csv' (String) untuk mengga
 * Aturan:
   1. Tanpa header. Pisahkan antar barang HANYA dengan newline (\n).
   2. DILARANG KERAS menggunakan tanda pipa (|) atau newline (\n) di dalam teks data (Ganti dengan spasi).
-  3. Ringkas description max 30 karakter.
+  3. Ekstrak description SEPENUHNYA tanpa disingkat atau dipotong.
 
 3. LOGIKA ASAL NEGARA (ORIGIN):
 - 'ori' (nama utuh: CHINA) & 'oc' (ISO Alpha-2: CN).
