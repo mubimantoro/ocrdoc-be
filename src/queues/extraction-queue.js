@@ -16,7 +16,7 @@ import SourceFileRepositories from '../services/source-files/repositories/source
 import ExtractionJobRepositories from '../services/documents/repositories/extraction-job-repositories.js';
 import EavRepositories from '../services/eav/repositories/eav-repositories.js';
 import ExtractionResultRepositories from '../services/documents/repositories/extraction-result-repositories.js';
-import { webhookQueue } from './webhook.queue.js';
+// import { webhookQueue } from './webhook.queue.js';
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -237,6 +237,7 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
     await ExtractionJobRepositories.updateStatusAndProgress(extractionJobRecord.id, 'completed', 100);
     await DocumentRepositories.updateStatus(documentId, 'completed');
 
+    /*
     await webhookQueue.add('send-webhook', {
       documentId,
       sourceFileId,
@@ -256,6 +257,7 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
       },
       removeOnComplete: true, // Hapus antrean jika sukses
     });
+    */
 
     const allDocs = await DocumentRepositories.findAllBySourceFileId(sourceFileId);
     const finishedCount = allDocs.filter((doc) => ['completed', 'failed'].includes(doc.status)).length;

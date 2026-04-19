@@ -57,17 +57,19 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     if (isPdf) {
       console.log('[BOUNDARY WORKER] [PDF MODE] Memulai AI Segmentation...');
 
-      // 1. AI SEGMENTATION: Selalu jalankan AI untuk memotong PDF (Berapapun tebalnya)
+      // 1. AI SEGMENTATION
       const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15);
-      documents = boundaryResult.documents || [];
+      const allDetectedDocuments = boundaryResult.documents || [];
 
-      // 2. HYBRID OVERRIDE: Jika user menentukan tipe dokumen manual, timpa hasil klasifikasi AI
+      // 2. TARGETED FILTERING: Jika user menentukan tipe dokumen manual, filter HANYA yang sesuai
       if (manualDocType) {
-        console.log(`[BOUNDARY WORKER] [HYBRID MODE] Menerapkan Override Klasifikasi ke tipe '${manualDocType}' pada ${documents.length} dokumen.`);
-        documents = documents.map((doc) => ({
-          ...doc,
-          doc_code: manualDocType
-        }));
+        documents = allDetectedDocuments.filter((doc) => doc.doc_code === manualDocType);
+        const discardedCount = allDetectedDocuments.length - documents.length;
+        if (discardedCount > 0) {
+          console.log(`[BOUNDARY WORKER] [FILTER] Membuang ${discardedCount} dokumen karena tidak sesuai tipe target: '${manualDocType}'`);
+        }
+      } else {
+        documents = allDetectedDocuments;
       }
 
       boundaryUsage = boundaryResult.usage;
@@ -76,13 +78,28 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     } else if (isImage) {
       console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar tunggal...');
       const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1);
+      const detectedPages = boundaryResult.pages || [];
 
-      documents = (boundaryResult.pages || []).map((doc) => ({
-        ...doc,
-        start_page: 1,
-        end_page: 1,
-        doc_code: manualDocType || doc.doc_code // Hybrid Override untuk Gambar
-      }));
+      // TARGETED FILTERING untuk Gambar
+      if (manualDocType) {
+        documents = detectedPages
+          .filter((doc) => doc.doc_code === manualDocType)
+          .map((doc) => ({
+            ...doc,
+            start_page: 1,
+            end_page: 1
+          }));
+
+        if (documents.length === 0) {
+          console.log(`[BOUNDARY WORKER] [FILTER] Gambar tunggal dibuang karena bukan tipe: '${manualDocType}'`);
+        }
+      } else {
+        documents = detectedPages.map((doc) => ({
+          ...doc,
+          start_page: 1,
+          end_page: 1
+        }));
+      }
 
       boundaryUsage = boundaryResult.usage;
       modelUsed = boundaryResult.modelUsed;
@@ -92,19 +109,23 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
 
       documents = workbook.SheetNames.map((sheetName) => {
-        let docCode = manualDocType; // Hybrid Override
+        let detectedDocCode = null;
 
-        if (!docCode) {
-          const n = sheetName.toUpperCase();
-          if (n.includes('INV')) docCode = '380';
-          else if (n.includes('PL')) docCode = '217';
-          else if (n.includes('CIPL')) docCode = '001';
+        const n = sheetName.toUpperCase();
+        if (n.includes('INV')) detectedDocCode = '380';
+        else if (n.includes('PL')) detectedDocCode = '217';
+        else if (n.includes('CIPL')) detectedDocCode = '001';
+
+        // FILTER: Jika ada manualDocType, buang sheet yang tidak sesuai
+        if (manualDocType && detectedDocCode !== manualDocType) {
+          return null;
         }
 
-        if (!docCode) return null;
+        const finalDocCode = manualDocType || detectedDocCode;
+        if (!finalDocCode) return null;
 
         return {
-          doc_code: docCode,
+          doc_code: finalDocCode,
           sheetName: sheetName,
           start_page: 1,
           end_page: 1,
@@ -128,6 +149,12 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     });
 
     console.log(`[BOUNDARY WORKER] Ditemukan ${documents.length} sub-dokumen.`);
+
+    // 🚀 VALIDASI: Jika tidak ada dokumen yang ditemukan/sesuai, hentikan proses di sini
+    if (documents.length === 0) {
+      const typeMsg = manualDocType ? `tipe dokumen '${manualDocType}'` : 'dokumen yang valid';
+      throw new Error(`NOT_FOUND: Sistem tidak menemukan ${typeMsg} di dalam file ini.`);
+    }
 
     // ==============================================================
     // 2. FASE SPLITTING & BATCHING I/O
