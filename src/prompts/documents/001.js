@@ -2,8 +2,17 @@ export const instructions = `
 KHUSUS COMMERCIAL INVOICE & PACKING LIST (001):
 
 1. OUTPUT COMPRESSION (KRITIKAL): Untuk mencegah JSON terpotong, gunakan singkatan kunci berikut pada bagian array:
-   - DI DALAM 'invoice_list': 'desc' (description), 'qty' (quantity), 'up' (unit_price), 'am' (amount), 'cur' (currency), 'pt' (packaging_type_item).
-   - DI DALAM 'pl_list': 'desc' (description), 'qty' (quantity), 'nw' (net_weight), 'gw' (gross_weight), 'ms' (measurement), 'pq' (packaging_qty), 'pu' (packaging_unit), 'qu' (quantity_unit).
+   - DI DALAM 'invoice_list': 'desc' (description), 'qty' (quantity), 'up' (unit_price), 'am' (amount), 'cur' (currency), 'pt' (packaging_type_item), 'ori' (origin), 'oc' (origin_code).
+   - DI DALAM 'pl_list': 'desc' (description), 'qty' (quantity), 'nw' (net_weight), 'gw' (gross_weight), 'ms' (measurement), 'pq' (packaging_qty), 'pu' (packaging_unit), 'qu' (quantity_unit), 'ori' (origin), 'oc' (origin_code).
+
+2. LOGIKA ASAL NEGARA (ORIGIN): Terapkan pencarian berjenjang (fallback) berikut:
+   - PRIORITAS 1 (Kolom): Jika ada kolom "Origin", "C.O.O", atau "Made In".
+   - PRIORITAS 2 (Deskripsi): Cari kata kunci "COO:", "Made in:", atau "Country of Origin:" di dalam deskripsi barang.
+   - PRIORITAS 3 (Global): Jika tidak ada di baris barang, ambil dari deklarasi global di header/footer dokumen.
+   
+   ATURAN STANDARISASI:
+   - 'ori': Isi dengan nama negara utuh (misal: "CHINA").
+   - 'oc': Konversi menjadi kode ISO Alpha-2 (2 huruf, misal: "CN"). Jika di dokumen sudah berupa kode (contoh: "COO: CN"), isi 'oc' dengan "CN" dan 'ori' dengan "CHINA".
 
 2. PETA LOKASI DATA (MAPPING GUIDE):
    #### A. Dokumen Identifikasi (Root Level)
