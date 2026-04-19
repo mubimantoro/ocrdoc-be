@@ -46,7 +46,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
 
     let documents = [];
-    let boundaryUsage = { input_text: 0, output: 0, ocr: 0, total: 0 };
+    let boundaryUsage = { inputText: 0, output: 0, ocr: 0, total: 0 };
     let modelUsed = null;
 
     // ==============================================================
@@ -71,7 +71,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       }
 
       boundaryUsage = boundaryResult.usage;
-      modelUsed = boundaryResult.model_used;
+      modelUsed = boundaryResult.modelUsed;
 
     } else if (isImage) {
       console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar tunggal...');
@@ -85,7 +85,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       }));
 
       boundaryUsage = boundaryResult.usage;
-      modelUsed = boundaryResult.model_used;
+      modelUsed = boundaryResult.modelUsed;
 
     } else if (isExcel) {
       console.log('[BOUNDARY WORKER] [EXCEL MODE] Memecah Sheets menjadi dokumen terpisah');
@@ -116,10 +116,10 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
 
     const rateInput = parseFloat(process.env.GEMINI_CHEAP_INPUT_RATE);
     const rateOutput = parseFloat(process.env.GEMINI_CHEAP_OUTPUT_RATE);
-    const cheapPrice = (boundaryUsage.input_total * rateInput) + (boundaryUsage.output * rateOutput);
+    const cheapPrice = (boundaryUsage.inputTotal * rateInput) + (boundaryUsage.output * rateOutput);
 
     await SourceFileRepositories.updateInitialMetrics(sourceFileId, {
-      input: boundaryUsage.input_text,
+      input: boundaryUsage.inputText,
       output: boundaryUsage.output,
       ocr: boundaryUsage.ocr,
       price: isNaN(cheapPrice) ? 0 : cheapPrice,

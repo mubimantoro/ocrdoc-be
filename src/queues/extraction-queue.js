@@ -77,7 +77,7 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
 
     const rateInput = parseFloat(process.env.GEMINI_FLAGSHIP_INPUT_RATE);
     const rateOutput = parseFloat(process.env.GEMINI_FLAGSHIP_OUTPUT_RATE);
-    const flagshipPrice = (extracted.usage.input_total * rateInput) + (extracted.usage.output * rateOutput);
+    const flagshipPrice = (extracted.usage.inputTotal * rateInput) + (extracted.usage.output * rateOutput);
 
     let rawRoot = extracted.data;
     if (Array.isArray(rawRoot) && rawRoot.length > 0) rawRoot = rawRoot[0];
@@ -85,13 +85,13 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
     const parsedConfidence = (!isNaN(parseFloat(confScore))) ? parseFloat(confScore) : 0;
 
     await DocumentRepositories.updateMetrics(documentId, {
-      tokenInput: extracted.usage.input_text,
+      tokenInput: extracted.usage.inputText,
       tokenOutput: extracted.usage.output,
       tokenOcr: extracted.usage.ocr,
       totalTokens: extracted.usage.total,
       price: isNaN(flagshipPrice) ? 0 : flagshipPrice,
       durationMs: durationMs,
-      modelUsed: extracted.model_used,
+      modelUsed: extracted.modelUsed,
       confidence: parsedConfidence
     });
 

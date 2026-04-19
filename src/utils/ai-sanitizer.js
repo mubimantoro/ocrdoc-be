@@ -1,4 +1,38 @@
 /**
+ * Utility untuk memperbaiki JSON yang terpotong (Truncated) secara otomatis
+ */
+const repairTruncatedJson = (jsonString) => {
+  let repaired = jsonString.trim();
+
+  // 1. Cek apakah berakhir dengan koma yang menggantung, hapus jika ada
+  if (repaired.endsWith(',')) {
+    repaired = repaired.slice(0, -1);
+  }
+
+  // 2. Hitung jumlah kurung yang terbuka dan tertutup
+  const openBraces = (repaired.match(/\{/g) || []).length;
+  const closeBraces = (repaired.match(/\}/g) || []).length;
+  const openBrackets = (repaired.match(/\[/g) || []).length;
+  const closeBrackets = (repaired.match(/\]/g) || []).length;
+
+  // 3. Tambahkan penutup yang kurang secara sekuensial
+  // Catatan: Ini adalah perbaikan "Best Effort"
+  let diffBraces = openBraces - closeBraces;
+  let diffBrackets = openBrackets - closeBrackets;
+
+  while (diffBrackets > 0) {
+    repaired += ']';
+    diffBrackets--;
+  }
+  while (diffBraces > 0) {
+    repaired += '}';
+    diffBraces--;
+  }
+
+  return repaired;
+};
+
+/**
  * Utility untuk membersihkan respons AI dari format Markdown Code Block
  * dan mengonversinya menjadi Object JavaScript yang valid.
  * * @param {string} rawText - Teks mentah dari respons AI
@@ -9,21 +43,27 @@ export const cleanAIJson = (rawText) => {
     throw new Error('Respons AI kosong (null/undefined).');
   }
 
+  const cleanedText = rawText
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
   try {
-    const cleanedText = rawText
-      .replace(/```json/gi, '')
-      .replace(/```/g, '')
-      .trim();
-
     return JSON.parse(cleanedText);
-
   } catch (error) {
-    console.error('\n[AI SANITIZER ERROR] Gagal melakukan parsing JSON:');
-    console.error('Error Message:', error.message);
-    console.error('--- RAW TEXT BEGIN ---');
-    console.error(rawText);
-    console.error('--- RAW TEXT END ---\n');
+    // 🛡️ COBA PERBAIKI JIKA TERPOTONG
+    try {
+      console.warn('[AI SANITIZER] Mendeteksi JSON terpotong, mencoba melakukan perbaikan...');
+      const repairedText = repairTruncatedJson(cleanedText);
+      return JSON.parse(repairedText);
+    } catch (repairError) {
+      console.error('\n[AI SANITIZER ERROR] Gagal melakukan parsing JSON bahkan setelah perbaikan:');
+      console.error('Error Message:', error.message, repairError.message);
+      console.error('--- RAW TEXT BEGIN ---');
+      console.error(rawText);
+      console.error('--- RAW TEXT END ---\n');
 
-    throw new Error('Gagal mengekstrak data JSON dari respons AI. Format tidak valid.');
+      throw new Error('Gagal mengekstrak data JSON dari respons AI. Format tidak valid setelah upaya perbaikan.');
+    }
   }
 };

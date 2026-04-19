@@ -50,5 +50,11 @@ Sistem menggunakan dua tier model:
 - **CHEAP (gemini-3.1-flash-lite-preview)**: Digunakan untuk tugas ringan seperti deteksi batas halaman.
 - **FLAGSHIP (gemini-3-flash-preview)**: Digunakan untuk tugas ekstraksi data yang kompleks dan presisi.
 
+## 📜 Aturan Kolaborasi (AI Assistant Rules)
+
+1. **Mandatory Implementation Plan**: AI Assistant **WAJIB** memberikan rencana implementasi (Implementation Plan) secara mendetail sebelum melakukan eksekusi kode atau perubahan sistem.
+2. **User Verification**: AI Assistant baru diperbolehkan melakukan eksekusi setelah pengguna memberikan konfirmasi/verifikasi terhadap rencana yang diajukan.
+3. **Documentation First**: Setiap perubahan arsitektur harus didokumentasikan dalam rencana tersebut untuk menjaga transparansi dan skalabilitas.
+
 ---
 *Dibuat oleh Antigravity AI Coding Assistant*

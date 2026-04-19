@@ -1,4 +1,3 @@
-/* eslint-disable no-unused-vars */
 import 'dotenv/config';
 import fs from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
@@ -22,7 +21,7 @@ if (!existsSync(LOCAL_UPLOAD_DIR)) {
  * @param {string} mimeType - Tipe MIME file (misal: application/pdf)
  * @returns {Promise<string>} Relative path file (ex: 'uploads/file.pdf') untuk disimpan ke DB
  */
-export const uploadToStorage = async (fileName, fileBuffer, mimeType = 'application/pdf') => {
+export const uploadToStorage = async (fileName, fileBuffer) => {
   try {
     const absoluteFilePath = path.join(LOCAL_UPLOAD_DIR, fileName);
 
