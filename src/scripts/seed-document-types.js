@@ -12,7 +12,7 @@ const seedDocumentTypes = async () => {
     { code: '854', name: 'BPOM' }, { code: '860', name: 'ECOO' },
     { code: '861', name: 'COO' }, { code: '871', name: 'AKL' },
     { code: '888', name: 'Pengecualian' }, { code: '957', name: 'SNI' },
-    { code: '958', name: 'Lartas' }, { code: '959', name: 'PI' },
+    { code: '958', name: 'Laporan Surveyor' }, { code: '959', name: 'PI' },
     { code: '999', name: 'Lainnya' }
   ];
 

@@ -1,7 +1,7 @@
 {
    "confidence_score": "INSTRUCTION: Berikan skor dari 0.000 hingga 1.000 seberapa yakin Anda dengan hasil ekstraksi dokumen ini. Jika buram atau banyak data terpotong, berikan skor rendah (misal 0.500)",
   "doc_code": "958",
-  "doc_name": "Lartas",
+  "doc_name": "Laporan Surveyor",
   "fields": [
     "ls_number", "vo_number",
     "importer_name", "importer_address", "importer_city",

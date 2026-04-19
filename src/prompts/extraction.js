@@ -63,7 +63,7 @@ DAFTAR REFERENSI KODE:
 - 380: Invoice | 217: Packing List | 001: CIPL
 - 705: Bill of Lading (B/L) | 740: Air Way Bill (AWB) / House AWB
 - 741: Master (AWB) | 704: Master (B/L)
-- 860: ECOO | 861: COO | 958: Lartas | 457: SKB PPh
+- 860: ECOO | 861: COO | 958: Laporan Surveyor | 457: SKB PPh
 - 000: Cukai | 999: Lainnya
 
 OUTPUT HARUS JSON:

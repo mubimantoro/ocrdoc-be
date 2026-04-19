@@ -84,7 +84,7 @@ const SCHEMA_ORDERS = {
     'doc_date', 'doc_no', 'fta', 'items'
   ],
 
-  // === 8. LARTAS ===
+  // === 8. LAPORAN SURVEYOR ===
   '958': [
     'doc_code', 'doc_name', 'confidence_score',
     'ls_number', 'vo_number',

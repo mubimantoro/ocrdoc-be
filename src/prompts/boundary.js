@@ -16,7 +16,7 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 - 705: Bill of Lading (B/L) | 740: Air Way Bill (AWB) / House AWB
 - 704: Master (B/L) | 741: Master (AWB)
 - 860: ECOO | 861: COO
-- 958: Lartas | 457: SKB PPh | 800: POSTEL
+- 958: Laporan Surveyor | 457: SKB PPh | 800: POSTEL
 - 813: CK | 846: SKEM | 854: BPOM | 871: AKL
 - 888: Pengecualian Perijinan | 957: SNI/SPB | 959: PI
 - 000: Cukai | 999: Lainnya
