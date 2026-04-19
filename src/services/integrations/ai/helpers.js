@@ -162,7 +162,11 @@ export const decompressPlData = (data) => {
     ms: 'measurement',
     pq: 'packaging_qty',
     pu: 'packaging_unit',
-    qu: 'quantity_unit'
+    qu: 'quantity_unit',
+    up: 'unit_price',
+    am: 'amount',
+    cur: 'currency',
+    pt: 'packaging_type_item'
   };
 
   const recursiveDecompress = (obj) => {
