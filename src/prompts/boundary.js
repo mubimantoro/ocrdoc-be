@@ -13,13 +13,12 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 
 ## KLASIFIKASI KODE DOKUMEN (WAJIB SESUAI DAFTAR INI):
 - 380: Invoice | 217: Packing List | 001: CIPL
-- 705: Bill of Lading (B/L) | 740: Air Way Bill (AWB) / House AWB
-- 704: Master (B/L) | 741: Master (AWB)
-- 860: ECOO | 861: COO
-- 958: Laporan Surveyor | 457: SKB PPh | 800: POSTEL
-- 813: CK | 846: SKEM | 854: BPOM | 871: AKL
-- 888: Pengecualian Perijinan | 957: SNI/SPB | 959: PI
-- 000: Cukai | 999: Lainnya
+- 705: Bill of Lading (B/L) | 740: Air Way Bill (AWB)
+- 860: ECOO | 861: COO (Surat Keterangan Asal)
+- 958: Laporan Surveyor | 457: SKB (Bebas PPh 22) | 800: POSTEL (Kominfo)
+- 813: CK (Cukai) | 846: SKEM (Energi) | 854: BPOM | 871: AKL (Alkes)
+- 957: SNI/SPB (Standard) | 959: PI (Persetujuan Impor)
+- 000: Cukai Lainnya | 999: Lainnya
 
 ## ATURAN KHUSUS CIPL (001)
 - CIPL (Commercial Invoice & Packing List) ditandai dengan adanya data Finansial (Harga/Nilai) dan data Fisik (Berat/Dimensi) yang merujuk pada Nomor Referensi yang sama.

@@ -1,4 +1,4 @@
-
+/* eslint-disable camelcase */
 
 /**
  * Universal Schema Strictness Enforcer (O(N) Time Complexity)
@@ -6,7 +6,7 @@
  * ATAU menjadi array kosong [] untuk tipe data tabel/list (Sesuai arahan PM).
  */
 export const enforceSchemaStrictness = (parsedData, schema) => {
-  const result = parsedData ? { ...parsedData } : {};
+  const result = {};
 
   // HELPER: Membuang instruksi dari nama key.
   const extractKey = (rawKey) => {
@@ -14,53 +14,57 @@ export const enforceSchemaStrictness = (parsedData, schema) => {
     return rawKey.split(' ')[0].trim();
   };
 
-  // 1. Enforce Root Meta
-  ['doc_code', 'doc_name', 'confidence_score'].forEach((key) => {
-    if (result[key] === undefined) result[key] = null;
-  });
+  // 1. Enforce Root Meta (Wajib ada di kontrak API)
+  result.doc_code = schema.doc_code || parsedData?.doc_code || null;
+  result.doc_name = schema.doc_name || parsedData?.doc_name || null;
+  result.confidence_score = parsedData?.confidence_score || 0;
 
   // 2. Enforce Root Fields
   if (Array.isArray(schema.fields)) {
     schema.fields.forEach((rawKey) => {
       const key = extractKey(rawKey);
-      if (result[key] === undefined) result[key] = null;
+      result[key] = parsedData?.[key] !== undefined ? parsedData[key] : null;
     });
   }
 
-  // 3. Enforce Root Items (Untuk schema seperti COO, ECOO, CIPL)
+  // 3. Enforce Root Items (Tabel Utama)
   if (Array.isArray(schema.items)) {
-    if (result.items === undefined || result.items === null) {
-      result.items = []; // 🚀 PM REQUEST: Jadikan array kosong
-    } else if (Array.isArray(result.items)) {
-      result.items = result.items.map((item) => {
-        const safeItem = { ...item };
+    if (!Array.isArray(parsedData?.items)) {
+      result.items = [];
+    } else {
+      result.items = parsedData.items.map((item) => {
+        const safeItem = {};
         schema.items.forEach((rawKey) => {
           const key = extractKey(rawKey);
-          if (safeItem[key] === undefined) safeItem[key] = null;
+          safeItem[key] = item[key] !== undefined ? item[key] : null;
         });
         return safeItem;
       });
     }
   }
 
-  // 4. Enforce Custom Wrappers & Array of Objects
+  // 4. Enforce Custom Wrappers & Nested Lists
   Object.keys(schema).forEach((schemaKey) => {
+    // Lewati yang sudah diproses di atas
+    if (['doc_code', 'doc_name', 'confidence_score', 'fields', 'items'].includes(schemaKey)) return;
+
     const schemaVal = schema[schemaKey];
 
-    // Deteksi format "Array of Objects" murni (Contoh: "details_list", "banks")
-    if (Array.isArray(schemaVal) && schemaKey !== 'fields' && schemaKey !== 'items') {
-      if (result[schemaKey] === undefined || result[schemaKey] === null) {
-        // 🚀 PM REQUEST: Jadikan array kosong [] jika data tidak ada di AI
+    // Deteksi format "Array of Objects" murni (tanpa fields/items internal)
+    if (Array.isArray(schemaVal)) {
+      if (!Array.isArray(parsedData?.[schemaKey])) {
         result[schemaKey] = [];
-      } else if (Array.isArray(result[schemaKey]) && schemaVal.length > 0 && typeof schemaVal[0] === 'object') {
-        result[schemaKey] = result[schemaKey].map((obj) => {
-          const safeObj = { ...obj };
+      } else if (schemaVal.length > 0 && typeof schemaVal[0] === 'object') {
+        result[schemaKey] = parsedData[schemaKey].map((obj) => {
+          const safeObj = {};
           Object.keys(schemaVal[0]).forEach((rawKey) => {
             const key = extractKey(rawKey);
-            if (safeObj[key] === undefined) safeObj[key] = null;
+            safeObj[key] = obj[key] !== undefined ? obj[key] : null;
           });
           return safeObj;
         });
+      } else {
+        result[schemaKey] = parsedData[schemaKey];
       }
       return;
     }
@@ -69,30 +73,30 @@ export const enforceSchemaStrictness = (parsedData, schema) => {
     const isCustomWrapper = schemaVal && typeof schemaVal === 'object' && !Array.isArray(schemaVal) && (schemaVal.fields || schemaVal.items);
 
     if (isCustomWrapper) {
-      if (result[schemaKey] === undefined || result[schemaKey] === null) {
-        result[schemaKey] = []; // 🚀 PM REQUEST: Wrapper yang hilang jadi array kosong
-      } else if (Array.isArray(result[schemaKey])) {
-        result[schemaKey] = result[schemaKey].map((wrapperObj) => {
-          const safeWrapper = { ...wrapperObj };
+      if (!Array.isArray(parsedData?.[schemaKey])) {
+        result[schemaKey] = [];
+      } else {
+        result[schemaKey] = parsedData[schemaKey].map((wrapperObj) => {
+          const safeWrapper = {};
 
           // Enforce fields di dalam wrapper
           if (Array.isArray(schemaVal.fields)) {
             schemaVal.fields.forEach((rawKey) => {
               const key = extractKey(rawKey);
-              if (safeWrapper[key] === undefined) safeWrapper[key] = null;
+              safeWrapper[key] = wrapperObj[key] !== undefined ? wrapperObj[key] : null;
             });
           }
 
           // Enforce items di dalam wrapper
           if (Array.isArray(schemaVal.items)) {
-            if (safeWrapper.items === undefined || safeWrapper.items === null) {
-              safeWrapper.items = []; // 🚀 PM REQUEST: Items di dalam wrapper jadi array kosong
-            } else if (Array.isArray(safeWrapper.items)) {
-              safeWrapper.items = safeWrapper.items.map((subItem) => {
-                const safeSubItem = { ...subItem };
+            if (!Array.isArray(wrapperObj.items)) {
+              safeWrapper.items = [];
+            } else {
+              safeWrapper.items = wrapperObj.items.map((subItem) => {
+                const safeSubItem = {};
                 schemaVal.items.forEach((rawKey) => {
                   const key = extractKey(rawKey);
-                  if (safeSubItem[key] === undefined) safeSubItem[key] = null;
+                  safeSubItem[key] = subItem[key] !== undefined ? subItem[key] : null;
                 });
                 return safeSubItem;
               });

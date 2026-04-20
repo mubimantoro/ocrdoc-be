@@ -8,7 +8,7 @@ import { ai, MODELS } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
 import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, parseItemsCsv, debugLog } from './helpers.js';
 import { processExcelExtraction } from './handlers/excel.js';
-import { processPdfExtraction } from './handlers/pdf.js';
+import { processPdfExtraction, processLightPdfExtraction } from './handlers/pdf.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,7 +91,25 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   if (isExcel) {
     finalParsedData = await processExcelExtraction(fileBuffer, sheetName, prompt, tokenUsage);
   } else if (isPdf) {
-    finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
+    // 🔍 PENGECEKAN KOMPLEKSITAS SKEMA (Light Mode Detection)
+    const isLightSchema = !jsonSchema.items && !jsonSchema.invoice_list && (jsonSchema.fields?.length <= 5);
+
+    if (isLightSchema) {
+      // Strategi 1: Coba Mode Cepat (Halaman 1 & Terakhir)
+      finalParsedData = await processLightPdfExtraction(fileBuffer, prompt, tokenUsage);
+
+      // Verifikasi Hasil (Self-Healing Fallback)
+      const hasNumber = finalParsedData?.doc_number || finalParsedData?.ls_number;
+      const isConfident = (finalParsedData?.confidence_score || 0) >= 0.6;
+
+      if (!hasNumber || !isConfident) {
+        console.warn('[AI-SERVICE] 🔄 Hasil Light Mode kurang memuaskan. Melakukan Fallback ke Full Extraction...');
+        finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
+      }
+    } else {
+      // Strategi Standar: Full Extraction (Map-Reduce)
+      finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
+    }
   } else {
     // IMAGE PROCESSING (Normal 1-Shot)
     const { parsedData: imgJson, usageMetadata } = await callGeminiWithRetry([

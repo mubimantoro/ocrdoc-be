@@ -60,3 +60,33 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
   await debugLog(docCode, 'merged_pdf_output', masterJson);
   return masterJson;
 };
+/**
+ * HANDLER: LIGHT PDF EXTRACTION (Page 1 & Last Page Only)
+ * Dioptimalkan untuk dokumen perizinan/regulasi (BPOM, AKL, POSTEL, dll)
+ * yang hanya butuh doc_number & doc_date.
+ */
+export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) => {
+  const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+  const numPages = pdfDoc.getPageCount();
+
+  console.log('\n[AI-SERVICE] [LIGHT PDF MODE] Mencoba Ekstraksi Cepat (Halaman 1 & Terakhir)...');
+
+  const lightPdf = await PDFDocument.create();
+  const pagesToCopy = numPages === 1 ? [0] : [0, numPages - 1];
+  const copiedPages = await lightPdf.copyPages(pdfDoc, pagesToCopy);
+  copiedPages.forEach((page) => lightPdf.addPage(page));
+
+  const lightPdfBytes = await lightPdf.save();
+
+  const { parsedData, usageMetadata } = await callGeminiWithRetry([
+    prompt,
+    { inlineData: { data: Buffer.from(lightPdfBytes).toString('base64'), mimeType: 'application/pdf' } }
+  ]);
+
+  tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
+  tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
+  tokenUsage.ocr += extractOcrTokens(usageMetadata);
+  tokenUsage.total += usageMetadata.totalTokenCount || 0;
+
+  return parsedData;
+};

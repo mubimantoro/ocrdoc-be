@@ -56,20 +56,37 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 `;
 };
 
+// Kamus Referensi Dokumen untuk mengatasi ambiguitas singkatan
+const DOCUMENT_DEFINITIONS = {
+  '380': 'Invoice / Commercial Invoice (Faktur komersial yang berisi rincian harga barang)',
+  '217': 'Packing List (Daftar rincian fisik kemasan, berat, dan dimensi barang)',
+  '001': 'CIPL (Commercial Invoice & Packing List gabungan)',
+  '705': 'Bill of Lading (B/L) (Dokumen pengangkutan laut)',
+  '740': 'Air Way Bill (AWB) (Dokumen pengangkutan udara)',
+  '860': 'ECOO (Electronic Certificate of Origin)',
+  '861': 'COO (Certificate of Origin / Surat Keterangan Asal)',
+  '958': 'Laporan Surveyor (Laporan verifikasi impor dari instansi resmi seperti Sucofindo/Surveyor Indonesia/Anindya)',
+  '846': 'SKEM (Sertifikat Hemat Energi) - Dokumen terkait Standar Kinerja Energi Minimum yang menunjukkan bahwa peralatan pemanfaat energi telah memenuhi standar efisiensi energi yang diwajibkan.',
+  '457': 'SKB (Surat Keterangan Bebas) - Bukti bahwa importir memperoleh fasilitas pembebasan pajak tertentu (PPh Pasal 22 impor).',
+  '800': 'POSTEL - Dokumen sertifikasi alat/perangkat telekomunikasi untuk memenuhi persyaratan teknis telekomunikasi di Indonesia.',
+  '854': 'BPOM - Dokumen persetujuan untuk barang di bawah pengawasan BPOM (Obat, Makanan, Kosmetik, Suplemen, dll).',
+  '871': 'AKL (Alat Kesehatan Luar Negeri) - Nomor pendaftaran/izin edar alat kesehatan impor di Indonesia.',
+  '957': 'SNI/SPB/DEPDAG - Dokumen terkait pemenuhan SNI wajib atau pengawasan mutu standar nasional Indonesia.',
+  '813': 'CK (Cukai) - Dokumen cukai untuk barang terkait ketentuan atau pengawasan di bidang cukai.',
+  '959': 'PI (Persetujuan Impor) - Izin impor komoditas tertentu yang diatur oleh Kementerian Perdagangan.',
+  '000': 'Cukai (Dokumen terkait Cukai lainnya)',
+  '999': 'Lainnya (Dokumen tidak teridentifikasi)'
+};
+
 /**
  * Mendapatkan prompt untuk validasi tipe dokumen (Guardrail)
  */
 export const getValidationPrompt = (expectedDocCode) => {
-  return `Kamu adalah AI Validator Dokumen Logistik & Regulasi.
-TUGAS: Verifikasi apakah dokumen terlampir benar-benar sesuai dengan kategori: [${expectedDocCode}].
+  const targetDefinition = DOCUMENT_DEFINITIONS[expectedDocCode] || 'Dokumen Logistik/Regulasi';
 
-DAFTAR REFERENSI KODE:
-- 380: Invoice | 217: Packing List | 001: CIPL
-- 705: Bill of Lading (B/L) | 740: Air Way Bill (AWB)
-- 860: ECOO | 861: COO | 958: Laporan Surveyor
-- 846: SKEM (Sertifikat Hemat Energi) | 457: SKB PPh
-- 800: POSTEL | 854: BPOM | 871: AKL | 957: SNI
-- 000: Cukai | 999: Lainnya
+  return `Kamu adalah AI Validator Dokumen Logistik & Regulasi.
+TUGAS UTAMA: Verifikasi secara cermat apakah dokumen terlampir benar-benar sesuai dengan kategori target:
+👉 [KODE: ${expectedDocCode}] -> ${targetDefinition}
 
 OUTPUT HARUS JSON:
 {
@@ -79,11 +96,17 @@ OUTPUT HARUS JSON:
   "reason": "Penjelasan singkat dalam Bahasa Indonesia"
 }
 
-ATURAN:
-1. Jika dokumen mengandung data finansial dan fisik secara lengkap, kategorikan sebagai 001.
-2. Jika hanya data barang tanpa harga, kategorikan sebagai 217.
-3. Jika hanya data harga tanpa rincian packing, kategorikan sebagai 380.
-4. Jangan tertipu oleh judul dokumen; lihat isinya.`;
+ATURAN VALIDASI (BACA DENGAN TELITI):
+1. FOKUS PADA TARGET: Periksa judul utama, logo instansi penerbit, atau teks regulasi di dalam dokumen. Jika sesuai dengan definisi [${expectedDocCode}] di atas, maka is_match = true.
+2. TOLERANSI FORMAT: Jangan tolak dokumen (is_match: false) hanya karena tata letak atau formatnya tidak standar. Fokus pada instansi dan tujuan dokumennya.
+3. JIKA MISMATCH: Jika dokumen benar-benar tidak sesuai dengan target, set is_match = false dan isi "detected_doc_code" dengan tebakan terdekat berdasarkan daftar berikut:
+   - 380 (Invoice), 217 (Packing List), 705 (B/L), 740 (AWB)
+   - 958 (Laporan Surveyor), 846 (SKEM), 800 (POSTEL), 854 (BPOM), 871 (AKL), 957 (SNI)
+   - 999 (Lainnya)
+4. ATURAN KHUSUS LOGISTIK:
+   - Jika dokumen mengandung harga dan berat secara lengkap: 001
+   - Jika hanya data barang tanpa harga: 217
+   - Jika hanya harga tanpa dimensi kemasan: 380`;
 };
 
 /**
