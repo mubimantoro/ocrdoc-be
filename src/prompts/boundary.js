@@ -6,7 +6,10 @@ KAMU WAJIB MERETURN EXACTLY ${totalPagesInChunk} OBJECT JSON DALAM ARRAY "pages"
 
 ## ATURAN EVALUASI PER HALAMAN (WAJIB DIIKUTI)
 Untuk setiap halaman, tentukan HANYA parameter berikut:
-1. is_new_document: Set TRUE HANYA JIKA halaman ini adalah AWAL dokumen baru (ada teks "Page 1 of X", "1/X", atau perubahan Nomor Dokumen / Vendor / Layout yang sangat drastis). Jika ini halaman lanjutan dari dokumen sebelumnya, set FALSE.
+1. is_new_document: Set TRUE jika halaman ini adalah HALAMAN PERTAMA (START/HEADER) dari sebuah dokumen baru.
+   - Indikator Utama: Adanya Judul Utama di bagian atas, Nomor Dokumen Baru, atau teks penomoran seperti "Halaman 1", "Page 1 of X", "1/X".
+   - Jika halaman ini secara jelas adalah sambungan/lampiran (halaman 2, 3, dst) dari dokumen yang sama, set FALSE.
+   - PENTING: Perubahan Nomor Dokumen adalah pemicu MUTLAK dokumen baru, meskipun Vendor dan Layout-nya identik.
 2. document_number: Ekstrak nomor dokumen (AWB#, Invoice#, BL#, dll). Jika tidak ada/kosong, isi null.
 3. vendor: Nama pengirim/penerbit (Shipper/Vendor). Jika tidak ada, isi null.
 4. doc_code: Kode klasifikasi dokumen (PILIH DARI DAFTAR DI BAWAH).
@@ -32,6 +35,11 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 ## ATURAN KHUSUS AWB (740) vs MASTER AWB (741)
 - Ada teks "House Airway Bill" / "HAB" → KODE 740.
 - Judul "Airway Bill" saja → Jika Shipper Maskapai ("Air", "Airlines") → 741. Jika Freight Forwarder → 740.
+
+## ATURAN KHUSUS INVOICE (380)
+- Dokumen Invoice (380) seringkali datang dalam tumpukan banyak dokumen berbeda dalam satu file.
+- WAJIB set is_new_document: true setiap kali Anda menemukan Nomor Invoice yang berbeda dari halaman sebelumnya, meskipun Vendor dan Layout-nya SAMA.
+- Nomor Invoice adalah identitas unik; perubahan nomor = dokumen baru. Jangan gabungkan dua nomor invoice berbeda ke dalam satu dokumen yang sama.
 
 ## ATURAN KLASIFIKASI DOKUMEN: LAPORAN SURVEYOR (KODE: 958)
 Tugasmu adalah mengklasifikasikan dokumen. KATEGORIKAN dokumen ini secara mutlak SEBAGAI "Laporan Surveyor" (958) JIKA salah satu dari kondisi (A) ATAU (B) di bawah ini terpenuhi:
