@@ -63,6 +63,23 @@ Jika kondisi A tidak ditemukan secara eksplisit, dokumen TETAP dikategorikan seb
 
 Jika kondisi di atas terpenuhi (>= 2 kriteria ditemukan), maka dokumen tersebut ADALAH Laporan Surveyor (958). Abaikan format tabel yang berantakan atau teks typo selama keyword utama di atas terdeteksi.
 
+## ATURAN KLASIFIKASI DOKUMEN: SKEM / SERTIFIKAT HEMAT ENERGI (KODE: 846)
+KATEGORIKAN dokumen ini SEBAGAI "SKEM" (846) JIKA memenuhi MINIMAL DUA (2) dari kriteria berikut di dalam teks dokumen:
+
+1. KEYWORD JUDUL UTAMA:
+   Terdapat salah satu dari frasa berikut:
+   - "SERTIFIKAT HEMAT ENERGI"
+   - "(SHE)"
+
+2. KEYWORD LEMBAGA PENERBIT:
+   Terdapat teks yang menunjukkan instansi sertifikasi:
+   - "Lembaga Sertifikasi Produk PT. Qualis Indonesia"
+
+3. KEYWORD FRASA STANDAR ENERGI:
+   Terdapat frasa spesifik terkait pengujian/standar:
+   - "Telah memenuhi Nilai Standar Kinerja Energi Minimum"
+   - "Tingkat Hemat Energi"
+
 ## OUTPUT JSON STRICT SCHEMA (TANPA MARKDOWN)
 Contoh jika absoluteStartPage = 7 dan totalPagesInChunk = 3 (Berisi 1 lbr AWB dan 2 lbr Invoice lanjutan):
 {

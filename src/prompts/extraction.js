@@ -1,12 +1,14 @@
 import { instructions as ciplInstructions } from './documents/001.js';
 import { instructions as plInstructions } from './documents/217.js';
 import { instructions as lsInstructions } from './documents/958.js';
+import { instructions as skemInstructions } from './documents/846.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '001': ciplInstructions,
   '217': plInstructions,
   '958': lsInstructions,
+  '846': skemInstructions,
   // Tambahkan kode dokumen lain di sini jika sudah ada promptnya
 };
 
@@ -58,14 +60,15 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
  * Mendapatkan prompt untuk validasi tipe dokumen (Guardrail)
  */
 export const getValidationPrompt = (expectedDocCode) => {
-  return `Kamu adalah AI Validator Dokumen Logistik.
+  return `Kamu adalah AI Validator Dokumen Logistik & Regulasi.
 TUGAS: Verifikasi apakah dokumen terlampir benar-benar sesuai dengan kategori: [${expectedDocCode}].
 
 DAFTAR REFERENSI KODE:
 - 380: Invoice | 217: Packing List | 001: CIPL
-- 705: Bill of Lading (B/L) | 740: Air Way Bill (AWB) / House AWB
-- 741: Master (AWB) | 704: Master (B/L)
-- 860: ECOO | 861: COO | 958: Laporan Surveyor | 457: SKB PPh
+- 705: Bill of Lading (B/L) | 740: Air Way Bill (AWB)
+- 860: ECOO | 861: COO | 958: Laporan Surveyor
+- 846: SKEM (Sertifikat Hemat Energi) | 457: SKB PPh
+- 800: POSTEL | 854: BPOM | 871: AKL | 957: SNI
 - 000: Cukai | 999: Lainnya
 
 OUTPUT HARUS JSON:
