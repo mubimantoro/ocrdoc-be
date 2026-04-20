@@ -8,7 +8,8 @@ import { ai, MODELS } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
 import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, parseItemsCsv, debugLog } from './helpers.js';
 import { processExcelExtraction } from './handlers/excel.js';
-import { processPdfExtraction, processLightPdfExtraction } from './handlers/pdf.js';
+import { PDFDocument } from 'pdf-lib';
+import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtraction } from './handlers/pdf.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,14 +92,20 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   if (isExcel) {
     finalParsedData = await processExcelExtraction(fileBuffer, sheetName, prompt, tokenUsage);
   } else if (isPdf) {
-    // 🔍 PENGECEKAN KOMPLEKSITAS SKEMA (Light Mode Detection)
+    // 🔍 PENGECEKAN KOMPLEKSITAS SKEMA
     const isLightSchema = !jsonSchema.items && !jsonSchema.invoice_list && (jsonSchema.fields?.length <= 5);
+    const hasItemList = Array.isArray(jsonSchema.items) || !!jsonSchema.invoice_list;
+
+    // Cek jumlah halaman untuk routing decision
+    const pdfDocCheck = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+    const numPagesPdf = pdfDocCheck.getPageCount();
+    const isHeavyDocument = hasItemList && numPagesPdf > 10;
 
     if (isLightSchema) {
-      // Strategi 1: Coba Mode Cepat (Halaman 1 & Terakhir)
+      // ⚡ Strategi 1: Light Mode (Halaman 1 & Terakhir)
       finalParsedData = await processLightPdfExtraction(fileBuffer, prompt, tokenUsage);
 
-      // Verifikasi Hasil (Self-Healing Fallback)
+      // Self-Healing Fallback
       const hasNumber = finalParsedData?.doc_number || finalParsedData?.ls_number;
       const isConfident = (finalParsedData?.confidence_score || 0) >= 0.6;
 
@@ -106,12 +113,15 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
         console.warn('[AI-SERVICE] 🔄 Hasil Light Mode kurang memuaskan. Melakukan Fallback ke Full Extraction...');
         finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
       }
+    } else if (isHeavyDocument) {
+      // 🚀 Strategi 2: Parallel Mode (dokumen berat >10 hal dengan item list)
+      finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage);
     } else {
-      // Strategi Standar: Full Extraction (Map-Reduce)
+      // 📄 Strategi 3: Standard Sequential (dokumen normal)
       finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
     }
   } else {
-    // IMAGE PROCESSING (Normal 1-Shot)
+    // 🖼️ IMAGE PROCESSING (Normal 1-Shot)
     const { parsedData: imgJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: mimeType } }
@@ -122,6 +132,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     tokenUsage.ocr += extractOcrTokens(usageMetadata);
     tokenUsage.total += usageMetadata.totalTokenCount || 0;
   }
+
 
   tokenUsage.inputText = Math.max(0, tokenUsage.inputTotal - tokenUsage.ocr);
 

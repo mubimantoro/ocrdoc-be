@@ -1,5 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
-import { getSequentialExtractionPrompt } from '../../../../prompts/extraction.js';
+import { getSequentialExtractionPrompt, getItemOnlyExtractionPrompt } from '../../../../prompts/extraction.js';
 import { callGeminiWithRetry, mergeArraysDeep, extractOcrTokens, debugLog } from '../helpers.js';
 
 /**
@@ -90,3 +90,130 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
 
   return parsedData;
 };
+
+/**
+ * HANDLER: PARALLEL PDF EXTRACTION (Map-Reduce + Boundary Reconciliation)
+ * Dioptimalkan untuk dokumen panjang (>10 hal) dengan item list (Invoice, PL, CIPL).
+ * Strategi:
+ *   Phase 1: Halaman 1 diekstrak secara penuh (Header + Items)
+ *   Phase 2: Halaman 2-N diekstrak paralel (Items Only) via Promise.all
+ *   Phase 3: Heuristic Reconciliation pada item di batas halaman
+ *   Phase 4: Merge semua hasil ke satu JSON
+ */
+export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, jsonSchema, tokenUsage) => {
+  const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+  const numPages = pdfDoc.getPageCount();
+
+  console.log(`\n[AI-SERVICE] [PARALLEL MODE] Memulai Parallel Extraction untuk ${numPages} halaman...`);
+
+  // Helper: Potong satu halaman menjadi PDF buffer
+  const extractPageBuffer = async (pageIndex) => {
+    const singlePdf = await PDFDocument.create();
+    const [page] = await singlePdf.copyPages(pdfDoc, [pageIndex]);
+    singlePdf.addPage(page);
+    return Buffer.from(await singlePdf.save());
+  };
+
+  // ================================================================
+  // PHASE 1: Halaman 1 - Full Extraction (Header + Items)
+  // ================================================================
+  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Mengekstrak Header dari Halaman 1...');
+  const page1Buffer = await extractPageBuffer(0);
+  const { parsedData: headerData, usageMetadata: headerMeta } = await callGeminiWithRetry([
+    prompt,
+    { inlineData: { data: page1Buffer.toString('base64'), mimeType: 'application/pdf' } }
+  ]);
+  tokenUsage.inputTotal += headerMeta.promptTokenCount || 0;
+  tokenUsage.output += headerMeta.candidatesTokenCount || 0;
+  tokenUsage.ocr += extractOcrTokens(headerMeta);
+  tokenUsage.total += headerMeta.totalTokenCount || 0;
+
+  const masterJson = headerData;
+  await debugLog(docCode, 'parallel_page_1_header', masterJson);
+
+  if (numPages === 1) return masterJson;
+
+  // ================================================================
+  // PHASE 2: Halaman 2-N - Parallel Item-Only Extraction
+  // ================================================================
+  console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages - 1} worker paralel...`);
+  const itemOnlyPrompt = getItemOnlyExtractionPrompt(jsonSchema);
+
+  const parallelTasks = Array.from({ length: numPages - 1 }, (_, i) => i + 1).map(async (pageIndex) => {
+    const pageBuffer = await extractPageBuffer(pageIndex);
+    const { parsedData: rawItems, usageMetadata: pageMeta } = await callGeminiWithRetry([
+      itemOnlyPrompt,
+      { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
+    ]);
+    tokenUsage.inputTotal += pageMeta.promptTokenCount || 0;
+    tokenUsage.output += pageMeta.candidatesTokenCount || 0;
+    tokenUsage.ocr += extractOcrTokens(pageMeta);
+    tokenUsage.total += pageMeta.totalTokenCount || 0;
+    return { pageIndex, items: Array.isArray(rawItems) ? rawItems : [] };
+  });
+
+  const parallelResults = await Promise.all(parallelTasks);
+  parallelResults.sort((a, b) => a.pageIndex - b.pageIndex);
+  console.log(`[AI-SERVICE] [PARALLEL MODE] Semua ${parallelResults.length} worker selesai.`);
+
+  // ================================================================
+  // PHASE 3: Heuristic Boundary Reconciliation
+  // Deteksi item terpotong di antara dua halaman berurutan
+  // ================================================================
+  const IDENTITY_KEYS = ['hs_code', 'number_item', 'item_no', 'description', 'commodity'];
+  const VALUE_KEYS = ['quantity', 'unit_price', 'amount', 'net_weight', 'gross_weight'];
+
+  const isLikelyContinuation = (prevLast, nextFirst) => {
+    if (!prevLast || !nextFirst) return false;
+    const hasIdentity = IDENTITY_KEYS.some((k) => nextFirst[k]);
+    const hasValue = VALUE_KEYS.some((k) => nextFirst[k]);
+    return !hasIdentity && hasValue;
+  };
+
+  const getItemArray = (data) => {
+    if (Array.isArray(data?.items)) return data.items;
+    if (Array.isArray(data?.invoice_list?.[0]?.items)) return data.invoice_list[0].items;
+    return [];
+  };
+
+  // ================================================================
+  // PHASE 4: Merge semua hasil ke masterJson
+  // ================================================================
+  const masterItems = getItemArray(masterJson);
+
+  for (let i = 0; i < parallelResults.length; i++) {
+    const pageItems = parallelResults[i].items;
+    if (pageItems.length === 0) continue;
+
+    // Rekonsiliasi dengan batas dari halaman sebelumnya
+    const prevItems = i === 0 ? masterItems : (parallelResults[i - 1]?.items || []);
+    if (prevItems.length > 0 && pageItems.length > 0) {
+      const prevLast = prevItems[prevItems.length - 1];
+      const nextFirst = pageItems[0];
+      if (isLikelyContinuation(prevLast, nextFirst)) {
+        const pageNum = parallelResults[i].pageIndex + 1;
+        console.log(`[AI-SERVICE] [PARALLEL MODE] 🔀 Rekonsiliasi: Menjahit item terpotong di batas Hal ${pageNum - 1} & Hal ${pageNum}`);
+        Object.assign(prevLast, nextFirst);
+        pageItems.shift();
+      }
+    }
+
+    if (pageItems.length === 0) continue;
+
+    // Sisipkan items ke struktur masterJson yang benar
+    if (Array.isArray(masterJson?.invoice_list)) {
+      if (!masterJson.invoice_list[0]) masterJson.invoice_list[0] = { items: [] };
+      if (!Array.isArray(masterJson.invoice_list[0].items)) masterJson.invoice_list[0].items = [];
+      masterJson.invoice_list[0].items.push(...pageItems);
+    } else {
+      if (!Array.isArray(masterJson.items)) masterJson.items = [];
+      masterJson.items.push(...pageItems);
+    }
+  }
+
+  await debugLog(docCode, 'parallel_merged_output', masterJson);
+  const totalItems = getItemArray(masterJson).length;
+  console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai. Total item terkumpul: ${totalItems}`);
+  return masterJson;
+};
+

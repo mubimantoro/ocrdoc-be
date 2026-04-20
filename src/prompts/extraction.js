@@ -116,4 +116,31 @@ export const getSequentialExtractionPrompt = (basePrompt, contextSummary) => {
   return `${basePrompt}
 ${contextSummary}
 CRITICAL: Ini adalah HALAMAN LANJUTAN. Gunakan konteks di atas agar tidak menduplikasi data. FOKUS menjahit detail part number ke item yang relevan atau menambah baris baru jika berbeda.`;
-};
+};
+
+/**
+ * Prompt khusus untuk ekstraksi item-only (Parallel Mode).
+ * Hanya mengambil baris-baris tabel dari halaman yang diberikan, tanpa header.
+ */
+export const getItemOnlyExtractionPrompt = (schemaDefinition) => {
+  // Tentukan key array yang relevan dari schema
+  const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
+
+  return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT:
+Ekstrak HANYA baris-baris data dari tabel/list yang ada di halaman ini.
+
+TARGET KEY: "${itemKey}"
+
+ATURAN KETAT:
+1. OUTPUT HANYA array JSON. Contoh: [{...}, {...}]
+2. JANGAN sertakan header dokumen (nomor, tanggal, vendor, dll).
+3. JANGAN sertakan key yang nilainya null atau kosong.
+4. Jika halaman ini tidak mengandung baris tabel (misal: halaman cover/tanda tangan), return array kosong: []
+5. Setiap item WAJIB memiliki minimal satu field yang terisi.
+
+BLUEPRINT FIELDS PER ITEM:
+${JSON.stringify(schemaDefinition.items || schemaDefinition.invoice_list?.items || [])}
+
+CRITICAL: Output harus berupa JSON array yang valid dan tertutup sempurna.`;
+};
+
