@@ -133,33 +133,25 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
 
   if (numPages === 1) return masterJson;
 
+  // Jika hanya 2 halaman, halaman 2 sekaligus menjadi halaman terakhir (Full Extraction)
+  const lastPageIndex = numPages - 1;
+
   // ================================================================
-  // PHASE 2: Halaman 2-N - Parallel Item-Only Extraction
+  // PHASE 2: Halaman 2-N - Parallel Extraction
+  //   - Halaman TENGAH (2 s/d N-1): Item-Only Prompt (Cepat & Hemat Token)
+  //   - Halaman TERAKHIR (N)       : Full Prompt (Tangkap Total, Tanda Tangan, Footer)
   // ================================================================
   console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages - 1} worker paralel...`);
   const itemOnlyPrompt = getItemOnlyExtractionPrompt(jsonSchema);
 
-  const parallelTasks = Array.from({ length: numPages - 1 }, (_, i) => i + 1).map(async (pageIndex) => {
-    const pageBuffer = await extractPageBuffer(pageIndex);
-    const { parsedData: rawItems, usageMetadata: pageMeta } = await callGeminiWithRetry([
-      itemOnlyPrompt,
-      { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
-    ]);
-    tokenUsage.inputTotal += pageMeta.promptTokenCount || 0;
-    tokenUsage.output += pageMeta.candidatesTokenCount || 0;
-    tokenUsage.ocr += extractOcrTokens(pageMeta);
-    tokenUsage.total += pageMeta.totalTokenCount || 0;
-    return { pageIndex, items: Array.isArray(rawItems) ? rawItems : [] };
-  });
+  // Helper & Konstanta dideklarasikan DI SINI agar tersedia saat
+  // async worker paralel resolve (mencegah Temporal Dead Zone error)
+  const getItemArray = (data) => {
+    if (Array.isArray(data?.items)) return data.items;
+    if (Array.isArray(data?.invoice_list?.[0]?.items)) return data.invoice_list[0].items;
+    return [];
+  };
 
-  const parallelResults = await Promise.all(parallelTasks);
-  parallelResults.sort((a, b) => a.pageIndex - b.pageIndex);
-  console.log(`[AI-SERVICE] [PARALLEL MODE] Semua ${parallelResults.length} worker selesai.`);
-
-  // ================================================================
-  // PHASE 3: Heuristic Boundary Reconciliation
-  // Deteksi item terpotong di antara dua halaman berurutan
-  // ================================================================
   const IDENTITY_KEYS = ['hs_code', 'number_item', 'item_no', 'description', 'commodity'];
   const VALUE_KEYS = ['quantity', 'unit_price', 'amount', 'net_weight', 'gross_weight'];
 
@@ -170,11 +162,41 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     return !hasIdentity && hasValue;
   };
 
-  const getItemArray = (data) => {
-    if (Array.isArray(data?.items)) return data.items;
-    if (Array.isArray(data?.invoice_list?.[0]?.items)) return data.invoice_list[0].items;
-    return [];
-  };
+  const parallelTasks = Array.from({ length: numPages - 1 }, (_, i) => i + 1).map(async (pageIndex) => {
+    const isLastPage = pageIndex === lastPageIndex;
+    const pageBuffer = await extractPageBuffer(pageIndex);
+
+    // Halaman terakhir → Full Prompt agar Total/Footer data tertangkap
+    const selectedPrompt = isLastPage ? prompt : itemOnlyPrompt;
+
+    const { parsedData: rawData, usageMetadata: pageMeta } = await callGeminiWithRetry([
+      selectedPrompt,
+      { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
+    ]);
+
+    tokenUsage.inputTotal += pageMeta.promptTokenCount || 0;
+    tokenUsage.output += pageMeta.candidatesTokenCount || 0;
+    tokenUsage.ocr += extractOcrTokens(pageMeta);
+    tokenUsage.total += pageMeta.totalTokenCount || 0;
+
+    return {
+      pageIndex,
+      isLastPage,
+      // Untuk halaman tengah: rawData langsung berupa array items
+      // Untuk halaman terakhir: rawData berupa object penuh, kita ambil items-nya
+      items: isLastPage ? getItemArray(rawData) : (Array.isArray(rawData) ? rawData : []),
+      fullData: isLastPage ? rawData : null,
+    };
+  });
+
+  const parallelResults = await Promise.all(parallelTasks);
+  parallelResults.sort((a, b) => a.pageIndex - b.pageIndex);
+  console.log(`[AI-SERVICE] [PARALLEL MODE] Semua ${parallelResults.length} worker selesai.`);
+
+  // ================================================================
+  // PHASE 3: Heuristic Boundary Reconciliation
+  // Deteksi item terpotong di antara dua halaman berurutan
+  // ================================================================
 
   // ================================================================
   // PHASE 4: Merge semua hasil ke masterJson
@@ -182,10 +204,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   const masterItems = getItemArray(masterJson);
 
   for (let i = 0; i < parallelResults.length; i++) {
-    const pageItems = parallelResults[i].items;
-    if (pageItems.length === 0) continue;
+    const { items: pageItems, isLastPage, fullData } = parallelResults[i];
 
-    // Rekonsiliasi dengan batas dari halaman sebelumnya
+    // Rekonsiliasi batas halaman (item terpotong antar halaman)
     const prevItems = i === 0 ? masterItems : (parallelResults[i - 1]?.items || []);
     if (prevItems.length > 0 && pageItems.length > 0) {
       const prevLast = prevItems[prevItems.length - 1];
@@ -198,16 +219,26 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
       }
     }
 
+    // Merge footer/summary dari halaman terakhir ke masterJson
+    // mergeArraysDeep hanya mengisi field yang masih null — tidak menimpa data halaman 1
+    if (isLastPage && fullData) {
+      console.log('[AI-SERVICE] [PARALLEL MODE] 🧩 Merging Last Page (Footer/Summary Data)...');
+      mergeArraysDeep(masterJson, fullData);
+    }
+
     if (pageItems.length === 0) continue;
 
-    // Sisipkan items ke struktur masterJson yang benar
-    if (Array.isArray(masterJson?.invoice_list)) {
-      if (!masterJson.invoice_list[0]) masterJson.invoice_list[0] = { items: [] };
-      if (!Array.isArray(masterJson.invoice_list[0].items)) masterJson.invoice_list[0].items = [];
-      masterJson.invoice_list[0].items.push(...pageItems);
-    } else {
-      if (!Array.isArray(masterJson.items)) masterJson.items = [];
-      masterJson.items.push(...pageItems);
+    // Sisipkan items ke struktur masterJson (hanya untuk halaman non-last)
+    // Halaman terakhir sudah di-merge via mergeArraysDeep di atas
+    if (!isLastPage) {
+      if (Array.isArray(masterJson?.invoice_list)) {
+        if (!masterJson.invoice_list[0]) masterJson.invoice_list[0] = { items: [] };
+        if (!Array.isArray(masterJson.invoice_list[0].items)) masterJson.invoice_list[0].items = [];
+        masterJson.invoice_list[0].items.push(...pageItems);
+      } else {
+        if (!Array.isArray(masterJson.items)) masterJson.items = [];
+        masterJson.items.push(...pageItems);
+      }
     }
   }
 
@@ -216,4 +247,6 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai. Total item terkumpul: ${totalItems}`);
   return masterJson;
 };
+
+
 
