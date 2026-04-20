@@ -64,9 +64,15 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       // 2. TARGETED FILTERING: Jika user menentukan tipe dokumen manual, filter HANYA yang sesuai
       if (manualDocType) {
         documents = allDetectedDocuments.filter((doc) => doc.doc_code === manualDocType);
-        const discardedCount = allDetectedDocuments.length - documents.length;
-        if (discardedCount > 0) {
-          console.log(`[BOUNDARY WORKER] [FILTER] Membuang ${discardedCount} dokumen karena tidak sesuai tipe target: '${manualDocType}'`);
+        const discardedDocs = allDetectedDocuments.filter((doc) => doc.doc_code !== manualDocType);
+
+        if (discardedDocs.length > 0) {
+          console.log(`\n[BOUNDARY WORKER] [FILTER] Membuang ${discardedDocs.length} dokumen karena tidak sesuai tipe target: '${manualDocType}'`);
+          discardedDocs.forEach((d) => {
+            const pageInfo = d.start_page === d.end_page ? `Hal ${d.start_page}` : `Hal ${d.start_page}-${d.end_page}`;
+            console.log(`   👉 ${pageInfo} | AI menebak: ${d.doc_code}`);
+          });
+          console.log('');
         }
       } else {
         documents = allDetectedDocuments;
@@ -164,6 +170,9 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
 
     if (isPdf) {
       masterPdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+      if (masterPdfDoc.isEncrypted) {
+        throw new Error('FILE_ENCRYPTED: Dokumen PDF terenkripsi. Proses pemotongan dihentikan.');
+      }
       maxPages = masterPdfDoc.getPageCount();
     }
 

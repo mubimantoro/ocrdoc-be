@@ -34,10 +34,34 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 - Ada teks "House Airway Bill" / "HAB" → KODE 740.
 - Judul "Airway Bill" saja → Jika Shipper Maskapai ("Air", "Airlines") → 741. Jika Freight Forwarder → 740.
 
-## ATURAN KHUSUS LAPORAN SURVEYOR (958)
-- Ditandai dengan judul "Laporan Surveyor", "Report of Verification", "Surveyor Report", ATAU judul yang diawali dengan kata "Impor" atau "Impor Barang".
-- Biasanya diterbitkan oleh instansi pemeriksa resmi seperti KSO Sucofindo - Surveyor Indonesia.
-- Seringkali memuat identifier unik seperti Nomor LS (LS No.) dan Nomor VO (VO No.).
+## ATURAN KLASIFIKASI DOKUMEN: LAPORAN SURVEYOR (KODE: 958)
+Tugasmu adalah mengklasifikasikan dokumen. KATEGORIKAN dokumen ini secara mutlak SEBAGAI "Laporan Surveyor" (958) JIKA salah satu dari kondisi (A) ATAU (B) di bawah ini terpenuhi:
+
+KONDISI A (JUDUL EKSPLISIT):
+Terdapat salah satu dari frasa eksak berikut (case-insensitive) pada dokumen:
+- "LAPORAN SURVEYOR"
+- "SURVEYOR REPORT"
+- "Report of Verification"
+
+KONDISI B (EVALUASI KRITERIA):
+Jika kondisi A tidak ditemukan secara eksplisit, dokumen TETAP dikategorikan sebagai 958 JIKA memenuhi MINIMAL DUA (2) dari kriteria berikut:
+
+2. KEYWORD PENERBIT/INSTANSI:
+   Terdapat salah satu dari entitas berikut:
+   - "SUCOFINDO"
+   - "SURVEYOR INDONESIA"
+   - "ID Survey"
+   - "PT. ANINDYA WIRAPUTRA KONSULT"
+
+3. KEYWORD IDENTIFIER UNIK:
+   Terdapat penanda nomor seri pengiriman yang diawali dengan kata:
+   - "LS No." (merujuk pada Laporan Surveyor Number)
+   - "VO No." (merujuk pada Verification Order Number)
+
+4. KEYWORD KONTEKS REGULASI (Opsional sebagai pendukung):
+   - Terdapat kata "Impor Barang" ATAU "Peraturan Menteri Perdagangan".
+
+Jika kondisi di atas terpenuhi (>= 2 kriteria ditemukan), maka dokumen tersebut ADALAH Laporan Surveyor (958). Abaikan format tabel yang berantakan atau teks typo selama keyword utama di atas terdeteksi.
 
 ## OUTPUT JSON STRICT SCHEMA (TANPA MARKDOWN)
 Contoh jika absoluteStartPage = 7 dan totalPagesInChunk = 3 (Berisi 1 lbr AWB dan 2 lbr Invoice lanjutan):

@@ -40,6 +40,9 @@ export const uploadFile = async (req, res, next) => {
       try {
         const fileBuffer = await fs.readFile(absoluteFilePath);
         const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+        if (pdfDoc.isEncrypted) {
+          return next(new InvariantError('Dokumen PDF terenkripsi atau dilindungi (Secured). Harap Print-to-PDF dokumen ini terlebih dahulu sebelum mengunggahnya.'));
+        }
         pageCount = pdfDoc.getPageCount();
       } catch (err) {
         return next(new InvariantError('Dokumen PDF rusak, terenkripsi, atau dilindungi kata sandi.'));

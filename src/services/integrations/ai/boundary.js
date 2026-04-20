@@ -56,6 +56,9 @@ export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, 
 export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 15) => {
   const pdfBuffer = await fs.readFile(absoluteFilePath);
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+  if (pdfDoc.isEncrypted) {
+    throw new Error('FILE_ENCRYPTED: Dokumen PDF terenkripsi. Proses dibatalkan untuk mencegah hilangnya data/gambar saat pemotongan.');
+  }
   const totalPages = pdfDoc.getPageCount();
 
   const allPagesRaw = [];
@@ -65,12 +68,20 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
     const endPage = Math.min(startPage + maxPagesPerChunk - 1, totalPages);
     const pagesInThisChunk = (endPage - startPage) + 1;
 
-    const newPdf = await PDFDocument.create();
-    const pageIndices = Array.from({ length: pagesInThisChunk }, (_, i) => startPage - 1 + i);
-    const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
-    copiedPages.forEach((page) => newPdf.addPage(page));
+    let chunkBuffer;
 
-    const chunkBuffer = await newPdf.save();
+    // BYPASS pdf-lib jika dokumen utuh (<= maxPagesPerChunk) untuk mencegah bug "Blank Page" pada PDF ber-layer/enkripsi
+    if (startPage === 1 && endPage === totalPages) {
+      console.log(`[AI-SERVICE] Bypass pdf-lib chunking untuk dokumen utuh (Hal 1 - ${totalPages})`);
+      chunkBuffer = pdfBuffer;
+    } else {
+      const newPdf = await PDFDocument.create();
+      const pageIndices = Array.from({ length: pagesInThisChunk }, (_, i) => startPage - 1 + i);
+      const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
+      copiedPages.forEach((page) => newPdf.addPage(page));
+      chunkBuffer = await newPdf.save();
+    }
+
     console.log(`[AI-SERVICE] Tagging Chunk: hal ${startPage} - ${endPage}`);
 
     const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage, pagesInThisChunk);
