@@ -6,13 +6,13 @@ class SourceFileRepositories {
   /**
    * Menyimpan metadata file yang diunggah oleh user
    */
-  async create(fileName, filePath, mimeType, pageCount, uploadedBy, status = 'uploaded') {
+  async create(fileName, filePath, mimeType, pageCount, uploadedBy, status = 'uploaded', targetDocType = null) {
     const query = `
-    INSERT INTO source_files (file_name, file_path, mime_type, page_count, uploaded_by, status) 
-    VALUES ($1, $2, $3, $4, $5, $6) 
+    INSERT INTO source_files (file_name, file_path, mime_type, page_count, uploaded_by, status, target_doc_type) 
+    VALUES ($1, $2, $3, $4, $5, $6, $7) 
     RETURNING *;
   `;
-    const result = await pool.query(query, [fileName, filePath, mimeType, pageCount, uploadedBy, status]);
+    const result = await pool.query(query, [fileName, filePath, mimeType, pageCount, uploadedBy, status, targetDocType]);
     return result.rows[0];
   }
 

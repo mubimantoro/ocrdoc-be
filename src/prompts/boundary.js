@@ -35,7 +35,7 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 - Judul "Airway Bill" saja → Jika Shipper Maskapai ("Air", "Airlines") → 741. Jika Freight Forwarder → 740.
 
 ## ATURAN KHUSUS LAPORAN SURVEYOR (958)
-- Ditandai secara eksplisit dengan judul "Laporan Surveyor", "Report of Verification", atau "Surveyor Report".
+- Ditandai dengan judul "Laporan Surveyor", "Report of Verification", "Surveyor Report", ATAU judul yang diawali dengan kata "Impor" atau "Impor Barang".
 - Biasanya diterbitkan oleh instansi pemeriksa resmi seperti KSO Sucofindo - Surveyor Indonesia.
 - Seringkali memuat identifier unik seperti Nomor LS (LS No.) dan Nomor VO (VO No.).
 

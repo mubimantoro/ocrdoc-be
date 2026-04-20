@@ -54,7 +54,8 @@ export const uploadFile = async (req, res, next) => {
       mimeType,
       pageCount,
       req.user.id,
-      'queued'
+      'queued',
+      doc_type
     );
 
     // 3. LEMPAR KE BACKGROUND WORKER (O(1) Non-Blocking Network I/O)
@@ -158,7 +159,7 @@ export const retry = async (req, res, next) => {
     // Reset state di Database
     await SourceFileRepositories.resetForRetry(req.params.id);
 
-    const manualDocType = req.body.doc_type || null;
+    const manualDocType = sf.target_doc_type || null;
 
 
     await boundaryQueue.add('detect-boundary', {
