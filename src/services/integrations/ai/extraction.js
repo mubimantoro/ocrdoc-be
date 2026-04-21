@@ -2,11 +2,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getExtractionPrompt } from '../../../prompts/extraction.js';
-import { getExtractionGuardrailPrompt } from '../../../prompts/validation/index.js';
 import { enforceSchemaStrictness } from '../../../utils/schema-enforcer.js';
 import { applyBusinessRules } from '../../../utils/business-rules.js';
-import { ai, MODELS } from '../../../config/gemini.js';
-import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
+import { MODELS } from '../../../config/gemini.js';
 import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, parseItemsCsv, debugLog } from './helpers.js';
 import { processExcelExtraction } from './handlers/excel.js';
 import { PDFDocument } from 'pdf-lib';
@@ -16,32 +14,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Guardrail: Validasi tipe dokumen sebelum ekstraksi dimulai.
- * Menggunakan prompt terpusat dari prompts/validation/index.js.
- */
-const verifyDocumentType = async (fileBuffer, mimeType, expectedDocCode) => {
-  const prompt = getExtractionGuardrailPrompt(expectedDocCode);
-
-  const response = await ai.models.generateContent({
-    model: MODELS.CHEAP,
-    contents: [
-      prompt,
-      { inlineData: { data: fileBuffer.toString('base64'), mimeType } }
-    ],
-    config: { responseMimeType: 'application/json', temperature: 0.1 }
-  });
-
-  const result = cleanAIJson(response.text);
-  return {
-    isMatch: result.is_match,
-    detectedDocCode: result.detected_doc_code,
-    confidence: result.confidence || 0,
-    reason: result.reason,
-    usage: response.usageMetadata || {}
-  };
-};
-
-/**
  * FASE 2 - Ekstraksi Data Spesifik (Smart Data Extraction)
  * Arsitektur Master: Omni-Channel Map Reduce (PDF & Excel) + Self-Healing
  */
@@ -49,23 +21,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   const tokenUsage = { inputTotal: 0, inputText: 0, ocr: 0, output: 0, total: 0 };
 
   // ==============================================================
-  // 🛡️ GUARDRAIL: VALIDASI TIPE DOKUMEN
-  // ==============================================================
-  console.log(`[AI-SERVICE] Verifikasi tipe dokumen (Expected: ${docCode})...`);
-  const validation = await verifyDocumentType(fileBuffer, mimeType, docCode);
-
-  tokenUsage.inputTotal += validation.usage.promptTokenCount || 0;
-  tokenUsage.output += validation.usage.candidatesTokenCount || 0;
-  tokenUsage.total += validation.usage.totalTokenCount || 0;
-
-  if (!validation.isMatch && validation.confidence > 0.8) {
-    const errorMsg = `MISMATCH: Dokumen terdeteksi sebagai [${validation.detectedDocCode}] namun dikirim sebagai [${docCode}]. Alasan: ${validation.reason}`;
-    console.warn(`[AI-SERVICE] 🛑 ${errorMsg}`);
-    throw new Error(errorMsg);
-  }
-
-  // ==============================================================
-  // 🚀 LANJUT EKSTRAKSI JIKA VALID
+  // 🚀 MULAI EKSTRAKSI
   // ==============================================================
   let jsonSchema;
 

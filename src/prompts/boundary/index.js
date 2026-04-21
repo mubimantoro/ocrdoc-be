@@ -20,5 +20,5 @@ const PROMPT_REGISTRY = {
 export const getBoundaryPromptForDocType = (docType, absoluteStartPage, totalPagesInChunk) => {
   const factory = PROMPT_REGISTRY[docType];
   if (factory) return factory(absoluteStartPage, totalPagesInChunk);
-  return getGenericBoundaryPrompt(absoluteStartPage, totalPagesInChunk);
+  return getGenericBoundaryPrompt(absoluteStartPage, totalPagesInChunk, docType);
 };

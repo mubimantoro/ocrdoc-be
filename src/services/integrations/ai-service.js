@@ -8,5 +8,4 @@
  */
 
 export { detectBoundaries, detectBoundariesChunked } from './ai/boundary.js';
-export { validateDocumentType } from './ai/validation.js';
 export { extractSmartData } from './ai/extraction.js';
