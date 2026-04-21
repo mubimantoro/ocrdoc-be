@@ -1,7 +1,10 @@
 /**
  * AI SERVICE FACADE
- * File ini berfungsi sebagai entry point tunggal untuk semua layanan bertenaga AI.
- * Logika internal dipisahkan ke dalam folder ./ai untuk skalabilitas.
+ * Entry point tunggal untuk semua layanan bertenaga AI.
+ * Konsumen (queue, controller) hanya perlu import dari sini.
+ *
+ * Prinsip Dependency Inversion: Queue bergantung pada abstraksi ini,
+ * bukan pada implementasi detail di folder ./ai/.
  */
 
 export { detectBoundaries, detectBoundariesChunked } from './ai/boundary.js';

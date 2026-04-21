@@ -1,61 +1,56 @@
 import fs from 'fs/promises';
 import { PDFDocument } from 'pdf-lib';
-import { getValidationPrompt } from '../../../prompts/validation.js';
+import { getPreSegmentationValidationPrompt } from '../../../prompts/validation/index.js';
 import { ai, MODELS } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
 
 /**
- * Memvalidasi apakah file sesuai dengan tipe dokumen yang dipilih user
+ * Memvalidasi apakah isi file sesuai dengan tipe dokumen yang dipilih user.
+ * Digunakan di boundary pipeline SEBELUM segmentasi penuh dilakukan.
+ * Hanya membaca 3 halaman pertama untuk efisiensi token.
+ *
+ * @param {string} absoluteFilePath - Path absolut ke file.
+ * @param {string} mimeType - MIME type file.
+ * @param {string} expectedDocType - Kode tipe dokumen yang diharapkan.
+ * @returns {Promise<{isMatch: boolean, detectedType: string, reason: string, confidence: number}>}
  */
 export const validateDocumentType = async (absoluteFilePath, mimeType, expectedDocType) => {
-  if (!expectedDocType) return { isMatch: true, detectedType: null };
+  if (!expectedDocType) return { isMatch: true, detectedType: null, reason: 'No expected type provided.', confidence: 1 };
 
-  const pdfBuffer = await fs.readFile(absoluteFilePath);
-  let sampleBuffer = pdfBuffer;
+  const fileBuffer = await fs.readFile(absoluteFilePath);
+  let sampleBuffer = fileBuffer;
 
-  // Jika PDF, ambil hanya 3 halaman pertama untuk penghematan token
   if (mimeType === 'application/pdf') {
     try {
-      const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-      const totalPages = pdfDoc.getPageCount();
-      const sampleCount = Math.min(3, totalPages);
-
+      const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+      const sampleCount = Math.min(3, pdfDoc.getPageCount());
       const newPdf = await PDFDocument.create();
       const pageIndices = Array.from({ length: sampleCount }, (_, i) => i);
       const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
       copiedPages.forEach((page) => newPdf.addPage(page));
       sampleBuffer = Buffer.from(await newPdf.save());
-    } catch (err) {
-      console.warn('[AI-VALIDATION] Gagal melakukan sampling PDF, menggunakan file utuh.');
-      console.warn(err);
+    } catch {
+      console.warn('[VALIDATION] Gagal sampling PDF, menggunakan file utuh.');
     }
   }
 
-  const prompt = getValidationPrompt(expectedDocType, 1); // pageCount placeholder
+  const prompt = getPreSegmentationValidationPrompt(expectedDocType);
 
   const response = await ai.models.generateContent({
     model: MODELS.CHEAP,
     contents: [
       prompt,
-      {
-        inlineData: {
-          data: sampleBuffer.toString('base64'),
-          mimeType: mimeType
-        }
-      }
+      { inlineData: { data: sampleBuffer.toString('base64'), mimeType } }
     ],
-    config: {
-      responseMimeType: 'application/json',
-      temperature: 0.1
-    }
+    config: { responseMimeType: 'application/json', temperature: 0.1 }
   });
 
-  const parsedResult = cleanAIJson(response.text);
+  const result = cleanAIJson(response.text);
 
   return {
-    isMatch: parsedResult.is_match,
-    detectedType: parsedResult.detected_type,
-    reason: parsedResult.reason,
-    confidence: parsedResult.confidence
+    isMatch: result.is_match ?? true,
+    detectedType: result.detected_type ?? null,
+    reason: result.reason ?? '',
+    confidence: result.confidence ?? 0
   };
 };

@@ -1,26 +1,26 @@
-/* eslint-disable no-unused-vars */
 /* eslint-disable camelcase */
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import { PDFDocument } from 'pdf-lib';
 import { Queue, Worker } from 'bullmq';
-import * as xlsx from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 import SourceFileRepositories from '../services/source-files/repositories/source-file-repositories.js';
-import { socketEmitter } from '../config/socket-emitter.js';
 import DocumentTypeRepositories from '../services/documents/repositories/document-type-repositories.js';
 import VendorRepositories from '../services/documents/repositories/vendor-repositories.js';
 import DocumentRepositories from '../services/documents/repositories/document-repositories.js';
-import { extractionQueue } from './extraction-queue.js';
 import ExtractionJobRepositories from '../services/documents/repositories/extraction-job-repositories.js';
-import { detectBoundaries, detectBoundariesChunked, validateDocumentType } from '../services/integrations/ai-service.js';
-import { uploadToStorage } from '../services/integrations/storage-service.js';
+import { socketEmitter } from '../config/socket-emitter.js';
+import { extractionQueue } from './extraction-queue.js';
+
+import { processPdfBoundary } from './handlers/pdf-boundary.js';
+import { processImageBoundary } from './handlers/image-boundary.js';
+import { processExcelBoundary } from './handlers/excel-boundary.js';
+import { loadMasterPdf, splitAndUploadPdf, uploadNonPdfFile } from './handlers/pdf-splitter.js';
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -30,11 +30,16 @@ const connection = {
 
 export const boundaryQueue = new Queue('boundary-jobs', { connection });
 
+// ==============================================================
+// WORKER: ORCHESTRATOR
+// Tanggung jawab: Routing per tipe file, update DB & socket,
+// dan delegasi logika ke handler yang tepat.
+// ==============================================================
 export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
   console.log('\n===========================================');
-  console.log(`[BOUNDARY WORKER] Memulai Job ID: ${job.id}`);
+  console.log(`[BOUNDARY WORKER] Job ID: ${job.id} | Dimulai`);
 
-  const { sourceFileId, absoluteFilePath, fileName, mimeType, manualDocType, pageCount } = job.data;
+  const { sourceFileId, absoluteFilePath, fileName, mimeType, manualDocType } = job.data;
   const startTime = new Date();
 
   try {
@@ -45,121 +50,32 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     const isImage = mimeType.startsWith('image/');
     const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
 
-    let documents = [];
-    let boundaryUsage = { inputText: 0, output: 0, ocr: 0, total: 0 };
-    let modelUsed = null;
-
-    // ==============================================================
-    // 1. FASE AI SEGMENTATION & CLASSIFICATION
-    // ==============================================================
-    const fileBuffer = await fs.readFile(absoluteFilePath);
+    // -------------------------------------------------------
+    // FASE 1: SEGMENTASI (Routing ke Handler)
+    // -------------------------------------------------------
+    let segmentationResult;
+    let fileBuffer;
 
     if (isPdf) {
-      console.log('[BOUNDARY WORKER] [PDF MODE] Memulai Validasi & Segmentation...');
-
-      // 1. SMART VALIDATION (Layer Baru)
-      let actualDocTypeToUse = manualDocType;
-      if (manualDocType) {
-        console.log(`[BOUNDARY WORKER] Memvalidasi tipe target: '${manualDocType}'...`);
-        const validation = await validateDocumentType(absoluteFilePath, mimeType, manualDocType);
-
-        if (!validation.isMatch) {
-          console.warn(`[BOUNDARY WORKER] [VALIDATION_MISMATCH] User pilih '${manualDocType}', tapi AI mendeteksi '${validation.detectedType}'. Alasan: ${validation.reason}`);
-          // Jika mismatch, kita gunakan prompt GENERIC (null) agar AI mendeteksi apa adanya
-          actualDocTypeToUse = null;
-        } else {
-          console.log(`[BOUNDARY WORKER] [VALIDATION_SUCCESS] Konfirmasi tipe: '${manualDocType}'`);
-        }
-      }
-
-      // 2. AI SEGMENTATION (Splitting)
-      // Gunakan actualDocTypeToUse (bisa null jika mismatch agar kembali ke mode generic)
-      const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15, actualDocTypeToUse);
-      const allDetectedDocuments = boundaryResult.documents || [];
-
-      // 3. TARGETED FILTERING
-      if (manualDocType) {
-        // Jika awalnya user pilih manualDocType, kita tetap filter berdasarkan itu
-        // (Atau bisa juga fleksibel menggunakan detectedType, tapi untuk sekarang kita ikuti kemauan user jika sudah tervalidasi)
-        documents = allDetectedDocuments.filter((doc) => doc.doc_code === (actualDocTypeToUse || doc.doc_code));
-
-        const discardedDocs = allDetectedDocuments.filter((doc) => doc.doc_code !== (actualDocTypeToUse || doc.doc_code));
-
-        if (discardedDocs.length > 0) {
-          console.log(`\n[BOUNDARY WORKER] [FILTER] Membuang ${discardedDocs.length} dokumen karena tidak sesuai tipe target: '${manualDocType}'`);
-          discardedDocs.forEach((d) => {
-            const pageInfo = d.start_page === d.end_page ? `Hal ${d.start_page}` : `Hal ${d.start_page}-${d.end_page}`;
-            console.log(`   👉 ${pageInfo} | AI menebak: ${d.doc_code}`);
-          });
-          console.log('');
-        }
-      } else {
-        documents = allDetectedDocuments;
-      }
-
-      boundaryUsage = boundaryResult.usage;
-      modelUsed = boundaryResult.modelUsed;
-
+      console.log('[BOUNDARY WORKER] Mode: PDF');
+      segmentationResult = await processPdfBoundary(absoluteFilePath, mimeType, manualDocType);
     } else if (isImage) {
-      console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar tunggal...');
-      const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1, manualDocType);
-      const detectedPages = boundaryResult.pages || [];
-
-      // TARGETED FILTERING untuk Gambar
-      if (manualDocType) {
-        documents = detectedPages
-          .filter((doc) => doc.doc_code === manualDocType)
-          .map((doc) => ({
-            ...doc,
-            start_page: 1,
-            end_page: 1
-          }));
-
-        if (documents.length === 0) {
-          console.log(`[BOUNDARY WORKER] [FILTER] Gambar tunggal dibuang karena bukan tipe: '${manualDocType}'`);
-        }
-      } else {
-        documents = detectedPages.map((doc) => ({
-          ...doc,
-          start_page: 1,
-          end_page: 1
-        }));
-      }
-
-      boundaryUsage = boundaryResult.usage;
-      modelUsed = boundaryResult.modelUsed;
-
+      console.log('[BOUNDARY WORKER] Mode: Image');
+      fileBuffer = await fs.readFile(absoluteFilePath);
+      segmentationResult = await processImageBoundary(fileBuffer, mimeType, manualDocType);
     } else if (isExcel) {
-      console.log('[BOUNDARY WORKER] [EXCEL MODE] Memecah Sheets menjadi dokumen terpisah');
-      const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
-
-      documents = workbook.SheetNames.map((sheetName) => {
-        let detectedDocCode = null;
-
-        const n = sheetName.toUpperCase();
-        if (n.includes('INV')) detectedDocCode = '380';
-        else if (n.includes('PL')) detectedDocCode = '217';
-        else if (n.includes('CIPL')) detectedDocCode = '001';
-
-        // FILTER: Jika ada manualDocType, buang sheet yang tidak sesuai
-        if (manualDocType && detectedDocCode !== manualDocType) {
-          return null;
-        }
-
-        const finalDocCode = manualDocType || detectedDocCode;
-        if (!finalDocCode) return null;
-
-        return {
-          doc_code: finalDocCode,
-          sheetName: sheetName,
-          start_page: 1,
-          end_page: 1,
-          document_number: `${fileName}_${sheetName}`,
-          vendor: 'EXCEL_SHEET'
-        };
-      }).filter((doc) => doc !== null);
+      console.log('[BOUNDARY WORKER] Mode: Excel');
+      fileBuffer = await fs.readFile(absoluteFilePath);
+      segmentationResult = processExcelBoundary(fileBuffer, fileName, manualDocType);
+    } else {
+      throw new Error(`UNSUPPORTED_MIME: Tipe file tidak didukung: ${mimeType}`);
     }
 
+    const { documents, usage: boundaryUsage, modelUsed } = segmentationResult;
+
+    // -------------------------------------------------------
+    // Update metrik cost boundary ke DB
+    // -------------------------------------------------------
     const rateInput = parseFloat(process.env.GEMINI_CHEAP_INPUT_RATE);
     const rateOutput = parseFloat(process.env.GEMINI_CHEAP_OUTPUT_RATE);
     const cheapPrice = (boundaryUsage.inputTotal * rateInput) + (boundaryUsage.output * rateOutput);
@@ -170,94 +86,60 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       ocr: boundaryUsage.ocr,
       price: isNaN(cheapPrice) ? 0 : cheapPrice,
       startedAt: startTime,
-      modelUsed: modelUsed
+      modelUsed
     });
 
     console.log(`[BOUNDARY WORKER] Ditemukan ${documents.length} sub-dokumen.`);
 
-    // 🚀 VALIDASI: Jika tidak ada dokumen yang ditemukan/sesuai, hentikan proses di sini
     if (documents.length === 0) {
-      const typeMsg = manualDocType ? `tipe dokumen '${manualDocType}'` : 'dokumen yang valid';
+      const typeMsg = manualDocType ? `tipe '${manualDocType}'` : 'dokumen yang valid';
       throw new Error(`NOT_FOUND: Sistem tidak menemukan ${typeMsg} di dalam file ini.`);
     }
 
-    // ==============================================================
-    // 2. FASE SPLITTING & BATCHING I/O
-    // ==============================================================
+    // -------------------------------------------------------
+    // FASE 2: SPLITTING & DISPATCH KE EXTRACTION QUEUE
+    // -------------------------------------------------------
+    let masterPdfBuffer = null;
     let masterPdfDoc = null;
-    let maxPages = 1;
+    let totalPages = 1;
 
     if (isPdf) {
-      masterPdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-      if (masterPdfDoc.isEncrypted) {
-        throw new Error('FILE_ENCRYPTED: Dokumen PDF terenkripsi. Proses pemotongan dihentikan.');
-      }
-      maxPages = masterPdfDoc.getPageCount();
+      const loaded = await loadMasterPdf(absoluteFilePath);
+      masterPdfBuffer = loaded.buffer;
+      masterPdfDoc = loaded.doc;
+      totalPages = loaded.totalPages;
+    } else {
+      // Untuk non-PDF, baca buffer sekali jika belum dibaca
+      if (!fileBuffer) fileBuffer = await fs.readFile(absoluteFilePath);
     }
-
 
     const BATCH_SIZE = 10;
 
     for (let i = 0; i < documents.length; i += BATCH_SIZE) {
       const batchDocs = documents.slice(i, i + BATCH_SIZE);
 
-      const batchPromises = batchDocs.map(async (doc) => {
-        // A. Operasi Database
+      await Promise.all(batchDocs.map(async (doc) => {
+        // A. Tulis ke Database
         const documentTypeId = await DocumentTypeRepositories.findIdByCode(doc.doc_code);
         let vendorId = null;
-        if (doc.vendor && doc.vendor.trim() !== '') {
+        if (doc.vendor?.trim()) {
           vendorId = await VendorRepositories.findOrCreateByName(doc.vendor);
         }
 
         const docRecord = await DocumentRepositories.create(
-          sourceFileId,
-          vendorId,
-          documentTypeId,
-          null,
-          doc.start_page,
-          doc.end_page,
-          doc.document_number,
-          'queued'
+          sourceFileId, vendorId, documentTypeId, null,
+          doc.start_page, doc.end_page, doc.document_number, 'queued'
         );
 
-        // B. FILE MANIPULATION (BYPASS UNTUK NON-PDF)
+        // B. Split & Upload File
         let splitFilePath;
-
         if (isPdf) {
-          const safeStart = Math.max(1, doc.start_page);
-          const safeEnd = Math.min(maxPages, doc.end_page);
-
-          let splitPdfBuffer;
-
-          // Gunakan buffer asli untuk menghindari "Blank Page Bug" pada layer gambar.
-          if (safeStart === 1 && safeEnd === maxPages) {
-            console.log(`[BOUNDARY WORKER] Bypass pdf-lib untuk dokumen utuh: ${doc.doc_code}`);
-            splitPdfBuffer = fileBuffer;
-          } else {
-            // Hanya gunakan pdf-lib jika kita benar-benar harus memotong PDF (misal hal 2-3 dari 10 hal)
-            const newPdf = await PDFDocument.create();
-            const pageIndices = Array.from(
-              { length: (safeEnd - safeStart) + 1 },
-              (_, idx) => safeStart - 1 + idx // Base-0 index
-            );
-
-            const copiedPages = await newPdf.copyPages(masterPdfDoc, pageIndices);
-            copiedPages.forEach((page) => newPdf.addPage(page));
-            splitPdfBuffer = Buffer.from(await newPdf.save());
-          }
-
-          const splitFileName = `split-${docRecord.id}-${Date.now()}.pdf`;
-          splitFilePath = await uploadToStorage(splitFileName, splitPdfBuffer, mimeType);
+          splitFilePath = await splitAndUploadPdf(doc, docRecord.id, masterPdfBuffer, masterPdfDoc, totalPages, mimeType);
         } else {
-          let ext = '.xlsx';
-          if (isImage) {
-            ext = mimeType === 'image/jpeg' ? '.jpg' : '.png';
-          }
-          const splitFileName = `file-${docRecord.id}-${Date.now()}${ext}`;
-          splitFilePath = await uploadToStorage(splitFileName, fileBuffer, mimeType);
+          splitFilePath = await uploadNonPdfFile(fileBuffer, docRecord.id, mimeType);
         }
 
-        // C. Update dan Masukkan ke Extraction Queue
+        // C. Dispatch ke Extraction Queue
         await DocumentRepositories.updateFilePath(docRecord.id, splitFilePath);
         const jobTracking = await ExtractionJobRepositories.create(docRecord.id, null, 'queued');
 
@@ -266,8 +148,8 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
           sourceFileId,
           splitFilePath,
           docCode: doc.doc_code,
-          mimeType: mimeType,
-          sheetName: doc.sheetName
+          mimeType,
+          sheetName: doc.sheetName ?? null
         }, {
           attempts: 3,
           backoff: { type: 'exponential', delay: 5000 },
@@ -275,24 +157,23 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
         });
 
         await ExtractionJobRepositories.updateBullmqId(jobTracking.id, extractJob.id);
-      });
+      }));
 
-      await Promise.all(batchPromises);
-      console.log(`[BOUNDARY WORKER] Batch memproses dokumen ${i + 1} s/d ${Math.min(i + BATCH_SIZE, documents.length)} selesai.`);
+      console.log(`[BOUNDARY WORKER] Batch ${i + 1}-${Math.min(i + BATCH_SIZE, documents.length)} selesai.`);
     }
 
-    // ==============================================================
-    // 3. CLEANUP
-    // ==============================================================
+    // -------------------------------------------------------
+    // FASE 3: CLEANUP
+    // -------------------------------------------------------
     masterPdfDoc = null;
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'processing', progress: 10 });
-    console.log(`[BOUNDARY WORKER] Job ${job.id} SELESAI.`);
+    console.log(`[BOUNDARY WORKER] Job ID: ${job.id} | SELESAI`);
     console.log('===========================================\n');
+
     return { status: 'success', sourceFileId };
 
   } catch (error) {
-    console.error(`\n[BOUNDARY WORKER] FATAL ERROR PADA JOB ${job.id}:`, error.message);
-
+    console.error(`\n[BOUNDARY WORKER] FATAL ERROR pada Job ${job.id}:`, error.message);
     await SourceFileRepositories.updateStatus(sourceFileId, 'failed', error.message);
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'failed' });
     throw error;

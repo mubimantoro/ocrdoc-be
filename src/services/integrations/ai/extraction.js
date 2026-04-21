@@ -1,7 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getExtractionPrompt, getValidationPrompt } from '../../../prompts/extraction.js';
+import { getExtractionPrompt } from '../../../prompts/extraction.js';
+import { getExtractionGuardrailPrompt } from '../../../prompts/validation/index.js';
 import { enforceSchemaStrictness } from '../../../utils/schema-enforcer.js';
 import { applyBusinessRules } from '../../../utils/business-rules.js';
 import { ai, MODELS } from '../../../config/gemini.js';
@@ -15,26 +16,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Validasi apakah tipe dokumen sesuai dengan yang diharapkan
+ * Guardrail: Validasi tipe dokumen sebelum ekstraksi dimulai.
+ * Menggunakan prompt terpusat dari prompts/validation/index.js.
  */
 const verifyDocumentType = async (fileBuffer, mimeType, expectedDocCode) => {
-  const prompt = getValidationPrompt(expectedDocCode);
+  const prompt = getExtractionGuardrailPrompt(expectedDocCode);
 
   const response = await ai.models.generateContent({
     model: MODELS.CHEAP,
     contents: [
       prompt,
-      {
-        inlineData: {
-          data: fileBuffer.toString('base64'),
-          mimeType: mimeType
-        }
-      }
+      { inlineData: { data: fileBuffer.toString('base64'), mimeType } }
     ],
-    config: {
-      responseMimeType: 'application/json',
-      temperature: 0.1
-    }
+    config: { responseMimeType: 'application/json', temperature: 0.1 }
   });
 
   const result = cleanAIJson(response.text);
