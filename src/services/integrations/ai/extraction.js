@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getExtractionPrompt } from '../../../prompts/extraction.js';
+import { getExtractionPrompt } from '../../../prompts/extraction/index.js';
 import { enforceSchemaStrictness } from '../../../utils/schema-enforcer.js';
 import { applyBusinessRules } from '../../../utils/business-rules.js';
 import { MODELS } from '../../../config/gemini.js';

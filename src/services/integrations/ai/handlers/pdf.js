@@ -1,6 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
-import { getSequentialExtractionPrompt, getItemOnlyExtractionPrompt } from '../../../../prompts/extraction.js';
-import { callGeminiWithRetry, mergeArraysDeep, extractOcrTokens, debugLog } from '../helpers.js';
+import { getSequentialExtractionPrompt, getItemOnlyExtractionPrompt } from '../../../../prompts/extraction/index.js';
+import { callGeminiWithRetry, mergeArraysDeep, extractOcrTokens, debugLog, parseItemsCsv } from '../helpers.js';
 
 /**
  * HANDLER: PDF EXTRACTION (One-Shot vs Sequential)
@@ -129,6 +129,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   tokenUsage.total += headerMeta.totalTokenCount || 0;
 
   const masterJson = headerData;
+  if (docCode === '001' || docCode === '217') {
+    parseItemsCsv(masterJson, docCode);
+  }
   await debugLog(docCode, 'parallel_page_1_header', masterJson);
 
   if (numPages === 1) return masterJson;
@@ -223,6 +226,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     // mergeArraysDeep hanya mengisi field yang masih null — tidak menimpa data halaman 1
     if (isLastPage && fullData) {
       console.log('[AI-SERVICE] [PARALLEL MODE] 🧩 Merging Last Page (Footer/Summary Data)...');
+      if (docCode === '001' || docCode === '217') {
+        parseItemsCsv(fullData, docCode);
+      }
       mergeArraysDeep(masterJson, fullData);
     }
 

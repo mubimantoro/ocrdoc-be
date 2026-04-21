@@ -1,7 +1,7 @@
-import { instructions as ciplInstructions } from './documents/001.js';
-import { instructions as plInstructions } from './documents/217.js';
-import { instructions as lsInstructions } from './documents/958.js';
-import { instructions as skemInstructions } from './documents/846.js';
+import { instructions as ciplInstructions } from './rules/001.js';
+import { instructions as plInstructions } from './rules/217.js';
+import { instructions as lsInstructions } from './rules/958.js';
+import { instructions as skemInstructions } from './rules/846.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
@@ -9,7 +9,6 @@ const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '217': plInstructions,
   '958': lsInstructions,
   '846': skemInstructions,
-  // Tambahkan kode dokumen lain di sini jika sudah ada promptnya
 };
 
 export const getExtractionPrompt = (docCode, schemaDefinition) => {
@@ -31,7 +30,7 @@ ATURAN INTERPRETASI BLUEPRINT (CARA MERAKIT OUTPUT JSON):
 ${specificInstructions}
 
 ATURAN OUTPUT KETAT (PENGHEMATAN TOKEN):
-1. PRETTY-PRINTED JSON: Gunakan indentasi dan baris baru (\n) agar struktur JSON tetap terjaga dan tidak terputus di tengah jalan.
+1. PRETTY-PRINTED JSON: Gunakan indentasi dan baris baru (\\n) agar struktur JSON tetap terjaga dan tidak terputus di tengah jalan.
 2. CLEAN JSON: HANYA output 1 JSON object valid. DILARANG menggunakan blok markdown (\`\`\`json) atau menambahkan teks komentar apapun.
 3. TOKEN DIET (KHUSUS ARRAY): Khusus di dalam array of objects ("items", "pl_list", dll), JANGAN menyertakan property/key yang bernilai null. Hilangkan saja key tersebut dari object untuk menghemat output token.
 4. ANTI-REPETISI: JANGAN menyalin/mengulang data statis parent (seperti vendor_name, origin_country) ke setiap baris item jika datanya sama. Cukup taruh di header.
@@ -56,59 +55,6 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 `;
 };
 
-// Kamus Referensi Dokumen untuk mengatasi ambiguitas singkatan
-const DOCUMENT_DEFINITIONS = {
-  '380': 'Invoice / Commercial Invoice (Faktur komersial yang berisi rincian harga barang)',
-  '217': 'Packing List (Daftar rincian fisik kemasan, berat, dan dimensi barang)',
-  '001': 'CIPL (Commercial Invoice & Packing List gabungan)',
-  '705': 'Bill of Lading (B/L) (Dokumen pengangkutan laut)',
-  '740': 'Air Way Bill (AWB) (Dokumen pengangkutan udara)',
-  '860': 'ECOO (Electronic Certificate of Origin)',
-  '861': 'COO (Certificate of Origin / Surat Keterangan Asal)',
-  '958': 'Laporan Surveyor (Laporan verifikasi impor dari instansi resmi seperti Sucofindo/Surveyor Indonesia/Anindya)',
-  '846': 'SKEM (Sertifikat Hemat Energi) - Dokumen terkait Standar Kinerja Energi Minimum yang menunjukkan bahwa peralatan pemanfaat energi telah memenuhi standar efisiensi energi yang diwajibkan.',
-  '457': 'SKB (Surat Keterangan Bebas) - Bukti bahwa importir memperoleh fasilitas pembebasan pajak tertentu (PPh Pasal 22 impor).',
-  '800': 'POSTEL - Dokumen sertifikasi alat/perangkat telekomunikasi untuk memenuhi persyaratan teknis telekomunikasi di Indonesia.',
-  '854': 'BPOM - Dokumen persetujuan untuk barang di bawah pengawasan BPOM (Obat, Makanan, Kosmetik, Suplemen, dll).',
-  '871': 'AKL (Alat Kesehatan Luar Negeri) - Nomor pendaftaran/izin edar alat kesehatan impor di Indonesia.',
-  '957': 'SNI/SPB/DEPDAG - Dokumen terkait pemenuhan SNI wajib atau pengawasan mutu standar nasional Indonesia.',
-  '813': 'CK (Cukai) - Dokumen cukai untuk barang terkait ketentuan atau pengawasan di bidang cukai.',
-  '959': 'PI (Persetujuan Impor) - Izin impor komoditas tertentu yang diatur oleh Kementerian Perdagangan.',
-  '000': 'Cukai (Dokumen terkait Cukai lainnya)',
-  '999': 'Lainnya (Dokumen tidak teridentifikasi)'
-};
-
-/**
- * Mendapatkan prompt untuk validasi tipe dokumen (Guardrail)
- */
-export const getValidationPrompt = (expectedDocCode) => {
-  const targetDefinition = DOCUMENT_DEFINITIONS[expectedDocCode] || 'Dokumen Logistik/Regulasi';
-
-  return `Kamu adalah AI Validator Dokumen Logistik & Regulasi.
-TUGAS UTAMA: Verifikasi secara cermat apakah dokumen terlampir benar-benar sesuai dengan kategori target:
-👉 [KODE: ${expectedDocCode}] -> ${targetDefinition}
-
-OUTPUT HARUS JSON:
-{
-  "is_match": boolean, 
-  "detected_doc_code": "string",
-  "confidence": number,
-  "reason": "Penjelasan singkat dalam Bahasa Indonesia"
-}
-
-ATURAN VALIDASI (BACA DENGAN TELITI):
-1. FOKUS PADA TARGET: Periksa judul utama, logo instansi penerbit, atau teks regulasi di dalam dokumen. Jika sesuai dengan definisi [${expectedDocCode}] di atas, maka is_match = true.
-2. TOLERANSI FORMAT: Jangan tolak dokumen (is_match: false) hanya karena tata letak atau formatnya tidak standar. Fokus pada instansi dan tujuan dokumennya.
-3. JIKA MISMATCH: Jika dokumen benar-benar tidak sesuai dengan target, set is_match = false dan isi "detected_doc_code" dengan tebakan terdekat berdasarkan daftar berikut:
-   - 380 (Invoice), 217 (Packing List), 705 (B/L), 740 (AWB)
-   - 958 (Laporan Surveyor), 846 (SKEM), 800 (POSTEL), 854 (BPOM), 871 (AKL), 957 (SNI)
-   - 999 (Lainnya)
-4. ATURAN KHUSUS LOGISTIK:
-   - Jika dokumen mengandung harga dan berat secara lengkap: 001
-   - Jika hanya data barang tanpa harga: 217
-   - Jika hanya harga tanpa dimensi kemasan: 380`;
-};
-
 /**
  * Mendapatkan prompt untuk ekstraksi sekuensial (halaman lanjutan)
  */
@@ -120,10 +66,8 @@ CRITICAL: Ini adalah HALAMAN LANJUTAN. Gunakan konteks di atas agar tidak mendup
 
 /**
  * Prompt khusus untuk ekstraksi item-only (Parallel Mode).
- * Hanya mengambil baris-baris tabel dari halaman yang diberikan, tanpa header.
  */
 export const getItemOnlyExtractionPrompt = (schemaDefinition) => {
-  // Tentukan key array yang relevan dari schema
   const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
 
   return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT:
@@ -143,4 +87,3 @@ ${JSON.stringify(schemaDefinition.items || schemaDefinition.invoice_list?.items 
 
 CRITICAL: Output harus berupa JSON array yang valid dan tertutup sempurna.`;
 };
-
