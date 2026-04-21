@@ -16,10 +16,10 @@ Satu-satunya pemicu valid untuk dokumen baru (is_new_document: true) adalah PERU
 
 1. is_new_document:
    - SET TRUE jika dan hanya jika:
-     a. Halaman pertama dari batch (${absoluteStartPage}).
+     a. Halaman ini adalah Halaman 1 dari file (absolute_page_number: 1).
      b. Kamu menemukan Nomor Dokumen (Invoice#, AWB#, dsb) yang BERBEDA dari halaman sebelumnya.
    - SET FALSE jika:
-     a. Nomor Dokumen SAMA dengan halaman sebelumnya, meskipun di halaman ini terdapat judul/header baru atau tulisan "Page 1".
+     a. Nomor Dokumen SAMA dengan halaman sebelumnya (atau masih dalam rangkaian yang sama), meskipun di halaman ini terdapat judul/header baru atau tulisan "Page 1".
      b. Halaman ini adalah lampiran atau kelanjutan tabel dari halaman sebelumnya.
      c. Nomor Dokumen tidak ditemukan tetapi layout dan vendor masih identik dengan sebelumnya.
 

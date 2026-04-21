@@ -5,15 +5,16 @@
  */
 export const getInvoiceBoundaryPrompt = (absoluteStartPage, totalPagesInChunk) => {
   return `Kamu adalah AI Spesialis Dokumen Invoice.
-TUGAS: Analisis batch PDF ini untuk memisahkan setiap Invoice unik.
+TUGAS: Analisis batch PDF ini HALAMAN PER HALAMAN untuk memisahkan setiap Invoice unik.
 Kamu menerima ${totalPagesInChunk} halaman (Halaman absolut ke-${absoluteStartPage} s/d ${absoluteStartPage + totalPagesInChunk - 1}).
+KAMU WAJIB MERETURN EXACTLY ${totalPagesInChunk} OBJECT JSON DALAM ARRAY "pages"! Tidak boleh kurang atau lebih.
 
 ## LOGIKA PEMISAHAN (STRICT):
 Satu file ini bisa berisi banyak Invoice yang berbeda. Kamu harus menentukan di mana satu Invoice berakhir dan Invoice berikutnya dimulai.
 
 1. is_new_document:
    - SET TRUE:
-     a. Halaman pertama batch (Hal ${absoluteStartPage}).
+     a. Halaman 1 dari seluruh file (absolute_page_number: 1).
      b. Ditemukan "Invoice Number" yang BERBEDA dari halaman sebelumnya.
    - SET FALSE:
      a. "Invoice Number" SAMA dengan halaman sebelumnya (Halaman lanjutan/tabel panjang).
@@ -31,7 +32,7 @@ Satu file ini bisa berisi banyak Invoice yang berbeda. Kamu harus menentukan di 
 ## PERINGATAN:
 Banyak Invoice memiliki "Header" yang berulang di setiap halaman. Jika nomor invoicenya tetap sama, JANGAN anggap itu sebagai dokumen baru meskipun tertulis "Page 1 of 1" (AI sering terkecoh oleh label halaman yang salah cetak).
 
-## OUTPUT JSON STRICT SCHEMA:
+## OUTPUT JSON STRICT SCHEMA (DENGAN ${totalPagesInChunk} ITEM DALAM "pages"):
 {
   "pages": [
     {
@@ -41,7 +42,8 @@ Banyak Invoice memiliki "Header" yang berulang di setiap halaman. Jika nomor inv
       "document_number": "string",
       "vendor": "string",
       "confidence": 1.0
-    }
+    },
+    ... (tambahkan object untuk setiap halaman berikutnya hingga halaman ke-${absoluteStartPage + totalPagesInChunk - 1})
   ]
 }`;
 };

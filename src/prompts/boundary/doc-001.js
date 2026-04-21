@@ -11,7 +11,7 @@ Kamu menerima ${totalPagesInChunk} halaman (Dimulai dari halaman absolut ke-${ab
 ## INSTRUKSI STRATEGIS:
 1. KAMU WAJIB MERETURN EXACTLY ${totalPagesInChunk} OBJECT JSON DALAM ARRAY "pages"! Tidak boleh kurang atau lebih.
 2. is_new_document: 
-   - Halaman Pertama (Absolut ke-${absoluteStartPage}): WAJIB TRUE.
+   - Halaman 1 dari seluruh file (absolute_page_number: 1): WAJIB TRUE.
    - SEMUA HALAMAN LAINNYA: WAJIB FALSE.
 3. doc_code: Selalu gunakan "001" untuk semua halaman.
 4. document_number: Cari nomor Invoice/Referensi utama di halaman manapun, dan gunakan nomor yang sama untuk SETIAP halaman.
