@@ -24,12 +24,10 @@ Untuk setiap halaman, tentukan HANYA parameter berikut:
 - 000: Cukai Lainnya | 999: Lainnya
 
 ## ATURAN KHUSUS CIPL (001)
-- CIPL (Commercial Invoice & Packing List) ditandai dengan adanya data Finansial (Harga/Nilai) dan data Fisik (Berat/Dimensi) yang merujuk pada Nomor Referensi yang sama.
-- Identifikasi Fungsional (Abaikan Judul Dokumen):
-  * Tipe Finansial (Invoice/Contract/Proforma): Mengandung unit_price, amount, currency, atau payment terms.
-  * Tipe Fisik (Packing List/Delivery Note): Mengandung net_weight, gross_weight, measurement, atau packaging details.
-- Jika menemukan halaman tipe Finansial dan halaman tipe Fisik yang berkaitan (Vendor sama, atau Nomor Referensi/PO/Invoice/Contract sama), KELOMPOKKAN KEDUANYA SEBAGAI KODE 001.
-- WAJIB set is_new_document: false pada halaman tipe Fisik tersebut jika ia merujuk pada nomor dokumen yang sama dengan halaman tipe Finansial sebelumnya.
+- CIPL (Commercial Invoice & Packing List) adalah SATU dokumen yang terdiri dari data Finansial (Invoice) dan data Fisik (Packing List).
+- Jika dalam satu file terdapat Invoice dan Packing List yang merujuk pada Nomor Referensi yang sama (atau Vendor yang sama), MEREKA ADALAH SATU DOKUMEN (001).
+- JANGAN PERNAH set is_new_document: true ketika berpindah dari halaman Invoice ke halaman Packing List jika mereka masih dalam satu rangkaian transaksi.
+- WAJIB set is_new_document: false pada halaman tipe Fisik (Packing List) jika ia merujuk pada nomor dokumen yang sama dengan halaman tipe Finansial sebelumnya.
 - Pastikan document_number yang direturn SAMA PERSIS untuk semua halaman dalam satu set CIPL agar sistem tidak memecahnya.
 
 ## ATURAN KHUSUS AWB (740) vs MASTER AWB (741)

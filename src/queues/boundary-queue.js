@@ -19,7 +19,7 @@ import VendorRepositories from '../services/documents/repositories/vendor-reposi
 import DocumentRepositories from '../services/documents/repositories/document-repositories.js';
 import { extractionQueue } from './extraction-queue.js';
 import ExtractionJobRepositories from '../services/documents/repositories/extraction-job-repositories.js';
-import { detectBoundaries, detectBoundariesChunked } from '../services/integrations/ai-service.js';
+import { detectBoundaries, detectBoundariesChunked, validateDocumentType } from '../services/integrations/ai-service.js';
 import { uploadToStorage } from '../services/integrations/storage-service.js';
 
 const connection = {
@@ -55,16 +55,35 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     const fileBuffer = await fs.readFile(absoluteFilePath);
 
     if (isPdf) {
-      console.log('[BOUNDARY WORKER] [PDF MODE] Memulai AI Segmentation...');
+      console.log('[BOUNDARY WORKER] [PDF MODE] Memulai Validasi & Segmentation...');
 
-      // 1. AI SEGMENTATION
-      const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15);
+      // 1. SMART VALIDATION (Layer Baru)
+      let actualDocTypeToUse = manualDocType;
+      if (manualDocType) {
+        console.log(`[BOUNDARY WORKER] Memvalidasi tipe target: '${manualDocType}'...`);
+        const validation = await validateDocumentType(absoluteFilePath, mimeType, manualDocType);
+
+        if (!validation.isMatch) {
+          console.warn(`[BOUNDARY WORKER] [VALIDATION_MISMATCH] User pilih '${manualDocType}', tapi AI mendeteksi '${validation.detectedType}'. Alasan: ${validation.reason}`);
+          // Jika mismatch, kita gunakan prompt GENERIC (null) agar AI mendeteksi apa adanya
+          actualDocTypeToUse = null;
+        } else {
+          console.log(`[BOUNDARY WORKER] [VALIDATION_SUCCESS] Konfirmasi tipe: '${manualDocType}'`);
+        }
+      }
+
+      // 2. AI SEGMENTATION (Splitting)
+      // Gunakan actualDocTypeToUse (bisa null jika mismatch agar kembali ke mode generic)
+      const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15, actualDocTypeToUse);
       const allDetectedDocuments = boundaryResult.documents || [];
 
-      // 2. TARGETED FILTERING: Jika user menentukan tipe dokumen manual, filter HANYA yang sesuai
+      // 3. TARGETED FILTERING
       if (manualDocType) {
-        documents = allDetectedDocuments.filter((doc) => doc.doc_code === manualDocType);
-        const discardedDocs = allDetectedDocuments.filter((doc) => doc.doc_code !== manualDocType);
+        // Jika awalnya user pilih manualDocType, kita tetap filter berdasarkan itu
+        // (Atau bisa juga fleksibel menggunakan detectedType, tapi untuk sekarang kita ikuti kemauan user jika sudah tervalidasi)
+        documents = allDetectedDocuments.filter((doc) => doc.doc_code === (actualDocTypeToUse || doc.doc_code));
+
+        const discardedDocs = allDetectedDocuments.filter((doc) => doc.doc_code !== (actualDocTypeToUse || doc.doc_code));
 
         if (discardedDocs.length > 0) {
           console.log(`\n[BOUNDARY WORKER] [FILTER] Membuang ${discardedDocs.length} dokumen karena tidak sesuai tipe target: '${manualDocType}'`);
@@ -83,7 +102,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
 
     } else if (isImage) {
       console.log('[BOUNDARY WORKER] [IMAGE MODE] Membaca gambar tunggal...');
-      const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1);
+      const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1, manualDocType);
       const detectedPages = boundaryResult.pages || [];
 
       // TARGETED FILTERING untuk Gambar

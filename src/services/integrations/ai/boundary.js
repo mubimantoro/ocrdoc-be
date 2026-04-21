@@ -2,6 +2,7 @@
 import fs from 'fs/promises';
 import { PDFDocument } from 'pdf-lib';
 import { getBoundaryPrompt } from '../../../prompts/boundary.js';
+import { getCIPLBoundaryPrompt } from '../../../prompts/boundary-cipl.js';
 import { ai, MODELS } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
 import { buildDocumentsFromPages } from '../../../utils/boundary-resolver.js';
@@ -10,8 +11,13 @@ import { extractOcrTokens } from './helpers.js';
 /**
  * API Call Level Rendah ke Gemini untuk Deteksi Batas Dokumen
  */
-export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, totalPagesInChunk) => {
-  const prompt = getBoundaryPrompt(absoluteStartPage, totalPagesInChunk);
+export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, totalPagesInChunk, manualDocType = null) => {
+  let prompt;
+  if (manualDocType === '001') {
+    prompt = getCIPLBoundaryPrompt(absoluteStartPage, totalPagesInChunk);
+  } else {
+    prompt = getBoundaryPrompt(absoluteStartPage, totalPagesInChunk);
+  }
 
   const response = await ai.models.generateContent({
     model: MODELS.CHEAP,
@@ -53,7 +59,7 @@ export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, 
 /**
  * ENTERPRISE ARCHITECTURE: Sequential Chunked Boundary Detection
  */
-export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 15) => {
+export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 15, manualDocType = null) => {
   const pdfBuffer = await fs.readFile(absoluteFilePath);
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
   if (pdfDoc.isEncrypted) {
@@ -84,7 +90,7 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
 
     console.log(`[AI-SERVICE] Tagging Chunk: hal ${startPage} - ${endPage}`);
 
-    const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage, pagesInThisChunk);
+    const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage, pagesInThisChunk, manualDocType);
     const taggedPages = result.pages || [];
 
     for (let p = startPage; p <= endPage; p++) {
