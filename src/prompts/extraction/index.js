@@ -3,16 +3,22 @@ import { instructions as plInstructions } from './rules/217.js';
 import { instructions as invInstructions } from './rules/380.js';
 import { instructions as lsInstructions } from './rules/958.js';
 import { instructions as skemInstructions } from './rules/846.js';
+import { instructions as ecooInstructions } from './rules/860.js';
+import { instructions as cooInstructions } from './rules/861.js';
 import { instructions as awbInstructions } from './rules/740.js';
+import { instructions as blInstructions } from './rules/705.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '001': ciplInstructions,
   '217': plInstructions,
   '380': invInstructions,
-  '958': lsInstructions,
-  '846': skemInstructions,
+  '705': blInstructions,
   '740': awbInstructions,
+  '846': skemInstructions,
+  '860': ecooInstructions,
+  '861': cooInstructions,
+  '958': lsInstructions,
 };
 
 export const getExtractionPrompt = (docCode, schemaDefinition) => {

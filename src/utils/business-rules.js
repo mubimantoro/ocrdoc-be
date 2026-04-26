@@ -156,7 +156,84 @@ const rulesRegistry = {
     }
   },
   // ==========================================
-  // RULES UNTUK AIR WAYBILL (AWB)
+  // RULES UNTUK BILL OF LADING (705)
+  // ==========================================
+  '705': (data) => {
+    const root = data.data || data;
+
+    // 1. Relational Inference: "SAME AS CONSIGNEE" Resolver
+    const notifyName = (root.notify_party_name || '').toUpperCase().trim();
+    const consigneeName = (root.consignee_name || '').toUpperCase().trim();
+
+    // Jika teks mengandung "SAME AS" ATAU namanya sama persis dengan consignee
+    if (notifyName.includes('SAME AS') || (notifyName === consigneeName && consigneeName !== '')) {
+
+      // A. Timpa/Salin Nama
+      root.notify_party_name = root.consignee_name;
+
+      // B. Timpa/Salin Alamat (Jika ada)
+      if (root.consignee_address) {
+        root.notify_party_address = root.consignee_address;
+      }
+
+      // C. Timpa/Salin Tax ID / NPWP
+      if (!root.notify_party_tax_id && root.consignee_tax_id) {
+        root.notify_party_tax_id = root.consignee_tax_id;
+      }
+    }
+
+    // Data Sanitization: Country of Origin
+    if (Array.isArray(root.items)) {
+      root.items.forEach((item) => {
+        if (item.c_o) {
+          // biarkan huruf alfabet saja
+          item.c_o = item.c_o.replace(/C\/O:?/i, '')
+            .replace(/MADE IN/i, '')
+            .replace(/[^a-zA-Z\s]/g, '')
+            .trim().toUpperCase();
+        }
+      });
+    }
+
+    // Deduplikasi Array & Sanitization: Containers
+    if (Array.isArray(root.containers)) {
+      const uniqueContainers = new Map();
+      root.containers.forEach((container) => {
+
+        // Sanitasi container_type_code
+        if (container.container_type_code) {
+          // Hapus spasi, tanda kutip tunggal/ganda, dsb.
+          container.container_type_code = container.container_type_code.replace(/['"\s]/g, '').toUpperCase();
+        } else if (container.container_size) {
+          // Fallback: Jika AI terlanjur memasukkan ke container_size, pindahkan dan sanitasi
+          container.container_type_code = container.container_size.replace(/['"\s]/g, '').toUpperCase();
+          container.container_size = null;
+        }
+
+        if (container.container_code) {
+          if (!uniqueContainers.has(container.container_code)) {
+            uniqueContainers.set(container.container_code, container);
+          } else {
+            const existing = uniqueContainers.get(container.container_code);
+            if (!existing.seal_code && container.seal_code) {
+              existing.seal_code = container.seal_code;
+            }
+          }
+        }
+      });
+      root.containers = Array.from(uniqueContainers.values());
+    }
+
+    // 4. Force Single Summary: Packaging (Mengambil qty terbesar jika AI masih mem-breakdown data)
+    if (Array.isArray(root.packaging) && root.packaging.length > 1) {
+      const mainPackage = root.packaging.reduce((prev, current) => {
+        return (Number(prev.qty) > Number(current.qty)) ? prev : current;
+      });
+      root.packaging = [mainPackage];
+    }
+  },
+  // ==========================================
+  // RULES UNTUK AIR WAYBILL (AWB 740)
   // ==========================================
   '740': async (data) => {
     const root = data.data || data;
@@ -189,8 +266,142 @@ const rulesRegistry = {
       if (root.box_num) topLevelPack.no_pieces = String(root.box_num);
       if (root.weight) topLevelPack.weight = String(root.weight);
     }
+  },
+  // ==========================================
+  // RULES UNTUK ELECTRONIC CERTIFICATE OF ORIGIN - ECOO (860)
+  // ==========================================
+  '860': (data) => {
+    const root = data.data || data;
 
-  }
+    if (Array.isArray(root.items)) {
+      // 1. SMART-FILTER: The Anti-Attachment Guard (Buang item berawalan "4M-")
+      root.items = root.items.filter((item) => {
+        const prodStr = String(item.prod_number || '');
+        const descStr = String(item.description || '');
+        if (prodStr.includes('4M-') || descStr.includes('4M-')) return false;
+        return true;
+      });
+
+      let currentItemNumber = 1;
+
+      root.items.forEach((item) => {
+        // A. Auto-fill Item Number yang kosong
+        if (!item.item_number || String(item.item_number).trim() === '') {
+          item.item_number = String(currentItemNumber);
+        } else {
+          currentItemNumber = Number(item.item_number);
+        }
+        currentItemNumber++;
+
+        // B. Fallback Bracket Parsing
+        if (!item.prod_number && item.description && item.description.includes('(')) {
+          const match = item.description.match(/(.*?)\s*\((.*?)\)/);
+          if (match) {
+            item.description = match[1].trim();
+            item.prod_number = match[2].trim();
+          }
+        }
+
+        // C. Sanitization: prod_number (Menghapus sisa kemasan)
+        if (item.prod_number) {
+          item.prod_number = item.prod_number.replace(/\/\d*\s*[A-Z]*CTNS?/gi, '').trim();
+          item.prod_number = item.prod_number.replace(/^\(/, '').replace(/\)$/, '').trim();
+          item.prod_number = item.prod_number.replace(/,$/, '').trim();
+        }
+
+        // D. Sanitization: unit_value (Ekstrak float murni)
+        if (typeof item.unit_value === 'string') {
+          const floatMatch = item.unit_value.replace(/,/g, '').match(/[\d]+\.\d+/);
+          if (floatMatch) {
+            item.unit_value = Number(floatMatch[0]);
+          } else {
+            const numMatch = item.unit_value.match(/\d+/);
+            item.unit_value = numMatch ? Number(numMatch[0]) : null;
+          }
+        }
+
+        // E. Standarisasi UoM Packages
+        if (item.type_package) {
+          item.type_package = standardizePackagingUnit(item.type_package);
+        }
+
+        // F. The "Quantity is Not Weight" Guard
+        if (item.gross_weight !== null && item.gross_weight !== undefined) {
+          const gwStr = String(item.gross_weight).toUpperCase();
+          if (gwStr.includes('PIECE') || gwStr.includes('PCS') || gwStr.includes('SET') || gwStr.includes('UNIT')) {
+            item.gross_weight = null;
+          }
+        }
+      });
+    }
+  },
+  // ==========================================
+  // RULES UNTUK CERTIFICATE OF ORIGIN (861)
+  // ==========================================
+  '861': (data) => {
+    const root = data.data || data;
+
+    if (Array.isArray(root.items)) {
+
+      // 1. SMART-FILTER: The Anti-Attachment Guard
+      root.items = root.items.filter((item) => {
+        const prodStr = String(item.prod_number || '');
+        const descStr = String(item.description || '');
+        if (prodStr.includes('4M-') || descStr.includes('4M-')) return false;
+        return true;
+      });
+
+      // 2. Data Enrichment & Cleansing per Item
+      let currentItemNumber = 1;
+
+      root.items.forEach((item) => {
+        // A. Auto-fill Item Number yang kosong akibat stempel/gagal OCR
+        if (!item.item_number || String(item.item_number).trim() === '') {
+          item.item_number = String(currentItemNumber);
+        } else {
+          currentItemNumber = Number(item.item_number); // Sinkronisasi urutan
+        }
+        currentItemNumber++;
+
+        // B. Fallback Bracket Parsing (Jika AI malas memecah kurung di description)
+        if (!item.prod_number && item.description && item.description.includes('(')) {
+          const match = item.description.match(/(.*?)\s*\((.*?)\)/);
+          if (match) {
+            item.description = match[1].trim(); // Ambil "LETTERING MACHINE"
+            item.prod_number = match[2].trim(); // Ambil isi dalam kurung
+          }
+        }
+
+        // C. Sanitization: prod_number (Menghapus sisa kemasan spt /3CTNS atau /TCTNS di mana pun posisinya)
+        if (item.prod_number) {
+          // Regex diganti menjadi global (gi) dan tidak menggunakan $ di akhir.
+          item.prod_number = item.prod_number.replace(/\/\d*\s*[A-Z]*CTNS?/gi, '').trim();
+
+          // Bersihkan sisa kurung buka/tutup jika masih ada
+          item.prod_number = item.prod_number.replace(/^\(/, '').replace(/\)$/, '').trim();
+
+          // Bersihkan jika ada koma di akhir akibat pemotongan regex sebelumnya
+          item.prod_number = item.prod_number.replace(/,$/, '').trim();
+        }
+
+        // D. Sanitization: unit_value (Ekstrak float murni)
+        if (typeof item.unit_value === 'string') {
+          const floatMatch = item.unit_value.replace(/,/g, '').match(/[\d]+\.\d+/);
+          if (floatMatch) {
+            item.unit_value = Number(floatMatch[0]);
+          } else {
+            const numMatch = item.unit_value.match(/\d+/);
+            item.unit_value = numMatch ? Number(numMatch[0]) : null;
+          }
+        }
+
+        // E. Standarisasi UoM Packages
+        if (item.type_package) {
+          item.type_package = standardizePackagingUnit(item.type_package);
+        }
+      });
+    }
+  },
 };
 
 /**
