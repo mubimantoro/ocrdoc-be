@@ -18,7 +18,7 @@ import { extractOcrTokens } from './helpers.js';
  */
 const buildChunkBuffer = async (pdfBuffer, pdfDoc, startPage, endPage) => {
   const totalPages = pdfDoc.getPageCount();
-  if (startPage === 1 && endPage === totalPages) {
+  if ((startPage === 1 && endPage === totalPages) || pdfDoc.isEncrypted) {
     return pdfBuffer;
   }
   const pagesInChunk = endPage - startPage + 1;
@@ -94,19 +94,17 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
   const pdfBuffer = await fs.readFile(absoluteFilePath);
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
 
-  if (pdfDoc.isEncrypted) {
-    throw new Error('FILE_ENCRYPTED: Dokumen PDF terenkripsi. Proses dibatalkan untuk mencegah hilangnya data/gambar saat pemotongan.');
-  }
-
   const totalPages = pdfDoc.getPageCount();
   const allPagesRaw = [];
   const tokenUsage = { inputTotal: 0, inputText: 0, ocr: 0, output: 0, total: 0 };
 
+  const actualMaxPages = pdfDoc.isEncrypted ? totalPages : maxPagesPerChunk;
+
   for (let startPage = 1; startPage <= totalPages; startPage += maxPagesPerChunk) {
-    const endPage = Math.min(startPage + maxPagesPerChunk - 1, totalPages);
+    const endPage = Math.min(startPage + actualMaxPages - 1, totalPages);
     const pagesInThisChunk = endPage - startPage + 1;
 
-    console.log(`[BOUNDARY] Tagging chunk: Hal ${startPage} - ${endPage} dari ${totalPages}`);
+    console.log(`[BOUNDARY] Tagging chunk: Hal ${startPage} - ${endPage} dari ${totalPages} ${pdfDoc.isEncrypted ? '(SECURED)' : ''}`);
 
     const chunkBuffer = await buildChunkBuffer(pdfBuffer, pdfDoc, startPage, endPage);
     const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage, pagesInThisChunk, docType);

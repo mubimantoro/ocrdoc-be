@@ -19,8 +19,8 @@ const slicePdf = async (masterPdfBuffer, masterPdfDoc, startPage, endPage, total
   const safeEnd = Math.min(totalPages, endPage);
 
   // Bypass pdf-lib jika tidak perlu potong (dokumen utuh)
-  if (safeStart === 1 && safeEnd === totalPages) {
-    console.log('[PDF-SPLITTER] Bypass: Dokumen utuh, tidak perlu dipotong.');
+  if ((safeStart === 1 && safeEnd === totalPages) || masterPdfDoc.isEncrypted) {
+    console.log('[PDF-SPLITTER] Bypass: Dokumen utuh atau Secured.');
     return masterPdfBuffer;
   }
 
@@ -74,7 +74,7 @@ export const loadMasterPdf = async (absoluteFilePath) => {
   const buffer = await fs.readFile(absoluteFilePath);
   const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
   if (doc.isEncrypted) {
-    throw new Error('FILE_ENCRYPTED: Dokumen PDF terenkripsi. Proses pemotongan dihentikan.');
+    console.log('[PDF-SPLITTER] Dokumen terdeteksi Secured. Mengaktifkan mode Bypass.');
   }
   return { buffer, doc, totalPages: doc.getPageCount() };
 };

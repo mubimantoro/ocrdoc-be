@@ -9,7 +9,21 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
-  // 🚀 OPTIMIZATION 1: SAFE ONE-SHOT (UP TO 8 PAGES)
+  if (pdfDoc.isEncrypted) {
+    console.log(`\n[AI-SERVICE] [PDF MODE] Secured PDF Terdeteksi! Memaksa mode ONE-SHOT Bypass (${numPages} hal)...`);
+    const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry([
+      prompt,
+      { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
+    ]);
+    tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
+    tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
+    tokenUsage.ocr += extractOcrTokens(usageMetadata);
+    tokenUsage.total += usageMetadata.totalTokenCount || 0;
+    await debugLog(docCode, 'one_shot_secured_pdf_output', pdfJson);
+    return pdfJson;
+  }
+
+  // OPTIMIZATION 1: SAFE ONE-SHOT (UP TO 8 PAGES)
   // Threshold diturunkan dari 15 ke 8 hal untuk mencegah JSON Truncation pada data yang sangat padat.
   if (docCode === '001' && numPages <= 8) {
     console.log(`\n[AI-SERVICE] [PDF MODE] Safe One-Shot untuk CIPL ${numPages} halaman (Akurasi Maksimal)...`);
@@ -25,7 +39,7 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
     return pdfJson;
   }
 
-  // 🚀 OPTIMIZATION 2: CONTEXT-AWARE SEQUENTIAL EXTRACTION (> 15 PAGES)
+  // OPTIMIZATION 2: CONTEXT-AWARE SEQUENTIAL EXTRACTION (> 15 PAGES)
   console.log(`\n[AI-SERVICE] [PDF MODE] Menerapkan Context-Aware Sequential Extraction (${numPages} hal)...`);
   let masterJson = null;
 
@@ -71,6 +85,20 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
 
   console.log('\n[AI-SERVICE] [LIGHT PDF MODE] Mencoba Ekstraksi Cepat (Halaman 1 & Terakhir)...');
 
+  // Jika Secured, One-Shot Bypass
+  if (pdfDoc.isEncrypted) {
+    console.log('[AI-SERVICE] Secured PDF. Bypass ke One-Shot...');
+    const { parsedData, usageMetadata } = await callGeminiWithRetry([
+      prompt,
+      { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
+    ]);
+    tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
+    tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
+    tokenUsage.ocr += extractOcrTokens(usageMetadata);
+    tokenUsage.total += usageMetadata.totalTokenCount || 0;
+    return parsedData;
+  }
+
   const lightPdf = await PDFDocument.create();
   const pagesToCopy = numPages === 1 ? [0] : [0, numPages - 1];
   const copiedPages = await lightPdf.copyPages(pdfDoc, pagesToCopy);
@@ -103,6 +131,11 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
 export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, jsonSchema, tokenUsage) => {
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
+
+  if (pdfDoc.isEncrypted) {
+    console.warn('[AI-SERVICE] [PARALLEL MODE] Secured PDF tidak bisa diproses paralel. Mengalihkan ke One-Shot...');
+    return processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
+  }
 
   console.log(`\n[AI-SERVICE] [PARALLEL MODE] Memulai Parallel Extraction untuk ${numPages} halaman...`);
 
@@ -142,7 +175,7 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   // ================================================================
   // PHASE 2: Halaman 2-N - Parallel Extraction
   //   - Halaman TENGAH (2 s/d N-1): Item-Only Prompt (Cepat & Hemat Token)
-  //   - Halaman TERAKHIR (N)       : Full Prompt (Tangkap Total, Tanda Tangan, Footer)
+  //   - Halaman TERAKHIR (N) : Full Prompt (Tangkap Total, Tanda Tangan, Footer)
   // ================================================================
   console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages - 1} worker paralel...`);
   const itemOnlyPrompt = getItemOnlyExtractionPrompt(jsonSchema);

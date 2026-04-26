@@ -1,14 +1,18 @@
 import { instructions as ciplInstructions } from './rules/001.js';
 import { instructions as plInstructions } from './rules/217.js';
+import { instructions as invInstructions } from './rules/380.js';
 import { instructions as lsInstructions } from './rules/958.js';
 import { instructions as skemInstructions } from './rules/846.js';
+import { instructions as awbInstructions } from './rules/740.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '001': ciplInstructions,
   '217': plInstructions,
+  '380': invInstructions,
   '958': lsInstructions,
   '846': skemInstructions,
+  '740': awbInstructions,
 };
 
 export const getExtractionPrompt = (docCode, schemaDefinition) => {
@@ -50,7 +54,7 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 1. Terapkan teknik "Chain of Thought". Buat key "_reasoning" di baris paling atas pada output JSON.
 2. ATURAN REASONING: WAJIB SANGAT SINGKAT! Maksimal 2 kalimat pendek.
 3. CRITICAL WARNING: Pastikan output JSON tertutup sempurna ( } atau ] ) di bagian akhir.
-4. TOKEN ECONOMY (SANGAT PENTING): Untuk mencegah JSON terpotong (truncation), JANGAN PERNAH menulis key yang nilainya null, kosong (""), atau array kosong ([]) di dalam objek array (seperti "items"). Jika data tidak ada di dokumen fisik, WAJIB hapus/abaikan key tersebut dari objek.
+4. TOKEN ECONOMY (SANGAT PENTING): Untuk mencegah JSON terpotong (truncation), JANGAN PERNAH menulis key yang nilainya null, kosong (""), atau array kosong ([]) di dalam objek array. Jika data tidak ada di dokumen fisik, WAJIB hapus/abaikan key tersebut.
 5. DENSE TABLE RULE: Jika dokumen memiliki tabel yang sangat panjang (padat), ringkaslah "description" produk hanya pada informasi intinya saja (abaikan spesifikasi teknis yang sangat detail) untuk memastikan semua baris item dapat terambil tanpa terpotong.
 `;
 };

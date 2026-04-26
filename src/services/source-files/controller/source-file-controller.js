@@ -4,7 +4,6 @@ import 'dotenv/config';
 import fs from 'fs/promises';
 import { PDFDocument } from 'pdf-lib';
 import { InvariantError } from '../../../exceptions/index.js';
-import { extractionQueue } from '../../../queues/extraction-queue.js';
 import response from '../../../utils/response.js';
 import SourceFileRepositories from '../repositories/source-file-repositories.js';
 import { formatSourceFileResponse } from '../../../utils/mapper/source-file.mapper.js';
@@ -41,7 +40,7 @@ export const uploadFile = async (req, res, next) => {
         const fileBuffer = await fs.readFile(absoluteFilePath);
         const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
         if (pdfDoc.isEncrypted) {
-          return next(new InvariantError('Dokumen PDF terenkripsi atau dilindungi (Secured). Harap Print-to-PDF dokumen ini terlebih dahulu sebelum mengunggahnya.'));
+          console.warn(`[API GATEWAY] File ${fileName} memiliki Digital Signature. Diteruskan ke Worker secara utuh.`);
         }
         pageCount = pdfDoc.getPageCount();
       } catch (err) {

@@ -103,7 +103,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   applyForwardFill(finalParsedData);
 
   // POST-PROCESSING: Business Rules
-  applyBusinessRules(docCode, finalParsedData);
+  await applyBusinessRules(docCode, finalParsedData);
 
   // POST-PROCESSING: Schema Contract Enforcer
   const strictParsedData = enforceSchemaStrictness(finalParsedData, jsonSchema);
