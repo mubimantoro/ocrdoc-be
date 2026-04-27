@@ -354,63 +354,97 @@ const rulesRegistry = {
 
     if (Array.isArray(root.items)) {
 
-      // 1. SMART-FILTER: The Anti-Attachment Guard
-      root.items = root.items.filter((item) => {
-        const prodStr = String(item.prod_number || '');
-        const descStr = String(item.description || '');
-        if (prodStr.includes('4M-') || descStr.includes('4M-')) return false;
-        return true;
+      // 1. THE GUILLOTINE (Pemenggal Lampiran) - Bekerja Sempurna
+      const attachmentIndex = root.items.findIndex((item) => {
+        const prodStr = String(item.prod_number || '').toUpperCase();
+        const pkgStr = String(item.type_package || '').toUpperCase();
+        const ocStr = String(item.origin_criteria || '').toUpperCase();
+        return prodStr.includes('4M-') || pkgStr.includes('C/NO') || ocStr === 'INDONESIA';
       });
 
-      // 2. Data Enrichment & Cleansing per Item
-      let currentItemNumber = 1;
+      if (attachmentIndex !== -1) {
+        root.items = root.items.slice(0, attachmentIndex);
+      }
 
+      // 2. PRE-CLEANSING
       root.items.forEach((item) => {
-        // A. Auto-fill Item Number yang kosong akibat stempel/gagal OCR
-        if (!item.item_number || String(item.item_number).trim() === '') {
-          item.item_number = String(currentItemNumber);
-        } else {
-          currentItemNumber = Number(item.item_number); // Sinkronisasi urutan
-        }
-        currentItemNumber++;
-
-        // B. Fallback Bracket Parsing (Jika AI malas memecah kurung di description)
-        if (!item.prod_number && item.description && item.description.includes('(')) {
-          const match = item.description.match(/(.*?)\s*\((.*?)\)/);
-          if (match) {
-            item.description = match[1].trim(); // Ambil "LETTERING MACHINE"
-            item.prod_number = match[2].trim(); // Ambil isi dalam kurung
+        // Ekstrak Harga Mutlak
+        if (typeof item.unit_value === 'string') {
+          const numBlocks = item.unit_value.replace(/,/g, '').match(/\d+(?:\.\d+)?/g);
+          if (numBlocks && numBlocks.length > 0) {
+            item.unit_value = Number(numBlocks[numBlocks.length - 1]);
+          } else {
+            item.unit_value = null;
           }
         }
+        // Bersihkan kemasan
+        if (typeof item.number_package === 'string') {
+          const numMatch = item.number_package.match(/\d+/);
+          item.number_package = numMatch ? Number(numMatch[0]) : item.number_package;
+        }
+        if (typeof item.gross_weight === 'string' && item.gross_weight.toUpperCase().includes('SET')) {
+          item.gross_weight = null;
+        }
+      });
 
-        // C. Sanitization: prod_number (Menghapus sisa kemasan spt /3CTNS atau /TCTNS di mana pun posisinya)
+      // 3. STRICT ROW STITCHER (Penjahit Presisi Tinggi)
+      const mergedItems = [];
+      for (let i = 0; i < root.items.length; i++) {
+        const currentItem = root.items[i];
+
+        // HUKUM MUTLAK: Fragment HANYA valid jika tidak punya harga. Dilarang pakai regex deskripsi!
+        const isFragment = !currentItem.unit_value;
+
+        if (isFragment && i + 1 < root.items.length) {
+          const nextItem = root.items[i + 1];
+
+          const stitchedItem = {
+            ...currentItem,
+            unit_value: nextItem.unit_value,
+            prod_number: (nextItem.prod_number && String(nextItem.prod_number).length > 2)
+              ? nextItem.prod_number
+              : currentItem.prod_number,
+            // Gabungkan deskripsi
+            description: (currentItem.description && !/^(OF|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)$/i.test(currentItem.description.trim()))
+              ? `${currentItem.description} ${nextItem.description || ''}`.trim()
+              : nextItem.description,
+            gross_weight: currentItem.gross_weight || nextItem.gross_weight,
+            type_package: currentItem.type_package || nextItem.type_package,
+            number_package: currentItem.number_package || nextItem.number_package,
+            origin_criteria: currentItem.origin_criteria || nextItem.origin_criteria
+          };
+
+          mergedItems.push(stitchedItem);
+          i++; // Lompati item sebelahnya karena sudah disedot
+        } else {
+          mergedItems.push(currentItem);
+        }
+      }
+
+      // 4. ABSOLUTE RE-INDEXING & FINAL BRACKET PARSING
+      mergedItems.forEach((item, index) => {
+        item.item_number = String(index + 1);
+
+        // Membersihkan kurung dan sisa kemasan di prod_number
         if (item.prod_number) {
-          // Regex diganti menjadi global (gi) dan tidak menggunakan $ di akhir.
           item.prod_number = item.prod_number.replace(/\/\d*\s*[A-Z]*CTNS?/gi, '').trim();
-
-          // Bersihkan sisa kurung buka/tutup jika masih ada
           item.prod_number = item.prod_number.replace(/^\(/, '').replace(/\)$/, '').trim();
-
-          // Bersihkan jika ada koma di akhir akibat pemotongan regex sebelumnya
           item.prod_number = item.prod_number.replace(/,$/, '').trim();
         }
 
-        // D. Sanitization: unit_value (Ekstrak float murni)
-        if (typeof item.unit_value === 'string') {
-          const floatMatch = item.unit_value.replace(/,/g, '').match(/[\d]+\.\d+/);
-          if (floatMatch) {
-            item.unit_value = Number(floatMatch[0]);
-          } else {
-            const numMatch = item.unit_value.match(/\d+/);
-            item.unit_value = numMatch ? Number(numMatch[0]) : null;
-          }
+        // Membersihkan nama barang dari kurung
+        if (item.description && item.description.includes('(')) {
+          const descMatch = item.description.match(/^([^(]+)/);
+          if (descMatch) item.description = descMatch[1].trim();
         }
 
-        // E. Standarisasi UoM Packages
-        if (item.type_package) {
-          item.type_package = standardizePackagingUnit(item.type_package);
+        // [NEW] PREFIX STRIPPER: Membuang awalan kemasan (Contoh: "TWO (2) CTNS OF ") secara aman
+        if (item.description) {
+          item.description = item.description.replace(/^(?:ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|\d+)\s*(?:\(\d+\))?\s*(?:CTNS?|BOXES?|PKGS?|SETS?|PALLETS?|CTN)\s*OF\s+/i, '').trim();
         }
       });
+
+      root.items = mergedItems;
     }
   },
 };

@@ -1,6 +1,3 @@
-/**
- * Prompt Injection Khusus untuk Air Waybill (740)
- */
 export const instructions = `
 >>> DIREKTIF KHUSUS DOKUMEN: AIR WAYBILL (AWB / 740) <<<
 
