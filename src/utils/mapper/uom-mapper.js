@@ -14,6 +14,13 @@ const PACKAGING_MAP = {
   'PACKAGES': 'PK'
 };
 
+const WEIGHT_CODES = {
+  '001': 'KG',
+  'KGS': 'KG',
+  'MTS': 'MT',
+  'LBS': 'LB'
+};
+
 export const standardizePackagingUnit = (unitStr) => {
   if (!unitStr || typeof unitStr !== 'string') return unitStr;
 
@@ -30,4 +37,10 @@ export const standardizePackagingUnit = (unitStr) => {
   if (sanitized.includes('PIECE') || sanitized === 'PC') return 'PCE';
 
   return unitStr;
+};
+
+export const isWeightUnit = (unitStr) => {
+  if (!unitStr) return false;
+  const sanitized = String(unitStr).trim().toUpperCase();
+  return WEIGHT_CODES[sanitized] !== undefined || sanitized.includes('KG') || sanitized.includes('TON');
 };

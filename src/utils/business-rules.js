@@ -285,7 +285,7 @@ const rulesRegistry = {
       let currentItemNumber = 1;
 
       root.items.forEach((item) => {
-        // A. Auto-fill Item Number yang kosong
+        // A. Auto-fill Item Number
         if (!item.item_number || String(item.item_number).trim() === '') {
           item.item_number = String(currentItemNumber);
         } else {
@@ -294,14 +294,10 @@ const rulesRegistry = {
         currentItemNumber++;
 
         // B. Sanitization: unit_value (Ekstrak float murni)
-        if (typeof item.unit_value === 'string') {
-          const floatMatch = item.unit_value.replace(/,/g, '').match(/[\d]+\.\d+/);
-          if (floatMatch) {
-            item.unit_value = Number(floatMatch[0]);
-          } else {
-            const numMatch = item.unit_value.match(/\d+/);
-            item.unit_value = numMatch ? Number(numMatch[0]) : null;
-          }
+        if (typeof item.unit_value === 'string' || typeof item.unit_value === 'number') {
+          const valStr = String(item.unit_value).replace(/,/g, '');
+          const floatMatch = valStr.match(/[\d]+\.\d+/);
+          item.unit_value = floatMatch ? Number(floatMatch[0]) : (Number(valStr) || null);
         }
 
         // C. Standarisasi UoM Packages
@@ -309,41 +305,42 @@ const rulesRegistry = {
           item.type_package = standardizePackagingUnit(item.type_package);
         }
 
-        // D. The "Quantity vs Net Weight vs Gross Weight" Guard
+        // D. The "Quantity vs Weight" Guard (SENSITIVE UPDATE)
         if (item.gross_weight !== null && item.gross_weight !== undefined) {
           const gwStr = String(item.gross_weight).toUpperCase();
-          // Jika AI mengirim satuan kuantitas (PIECES/SETS) ATAU Net Weight (N.W.)
-          if (
-            gwStr.includes('PIECE') || gwStr.includes('PCS') ||
-            gwStr.includes('SET') || gwStr.includes('UNIT') ||
-            gwStr.includes('N.W') || gwStr.includes('N. W') ||
-            gwStr.includes('NET WEIGHT')
-          ) {
-            item.gross_weight = null;
+          const weightCode = String(item.weight_code || item.quantity_code || '').trim();
+
+          // Kunci: Jika weight_code adalah '001' atau satuan berat lainnya, JANGAN di-null-kan.
+          const isActuallyWeight = weightCode === '001' || gwStr.includes('KG') || gwStr.includes('MT');
+
+          if (!isActuallyWeight) {
+            // Jika bukan satuan berat, baru cek apakah itu teks kuantitas (PCS/SETS)
+            if (
+              gwStr.includes('PIECE') || gwStr.includes('PCS') ||
+              gwStr.includes('SET') || gwStr.includes('UNIT') ||
+              gwStr.includes('N.W') || gwStr.includes('N. W') ||
+              gwStr.includes('NET WEIGHT')
+            ) {
+              item.gross_weight = null;
+            }
+          } else {
+            // Pastikan gross_weight kembali menjadi Number murni jika valid
+            const numMatch = gwStr.replace(/,/g, '').match(/[\d.]+/);
+            item.gross_weight = numMatch ? Number(numMatch[0]) : item.gross_weight;
           }
         }
 
-        // E. Sanitization: description (Memangkas "Trailer Noise")
+        // E. Sanitization: description
         if (item.description && typeof item.description === 'string') {
           let desc = item.description;
-
-          // Potong di kemunculan pertama "HS CODE" (case insensitive)
           const hsMatch = desc.match(/HS\s*CODE/i);
           if (hsMatch) desc = desc.substring(0, hsMatch.index);
-
-          // Potong di kemunculan pertama "TOTAL:"
           const totalMatch = desc.match(/TOTAL:/i);
           if (totalMatch) desc = desc.substring(0, totalMatch.index);
-
-          // Potong di kemunculan pertama "THIRD-PARTY" atau "THIRD PARTY"
           const thirdPartyMatch = desc.match(/THIRD-?PARTY/i);
           if (thirdPartyMatch) desc = desc.substring(0, thirdPartyMatch.index);
-
-          // Potong di simbol "***" (tanda pemisah tabel)
           const starMatch = desc.match(/\*\*\*/);
           if (starMatch) desc = desc.substring(0, starMatch.index);
-
-          // Update description dengan teks yang sudah bersih
           item.description = desc.trim();
         }
       });
