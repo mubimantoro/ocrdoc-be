@@ -355,30 +355,47 @@ const rulesRegistry = {
 
     if (Array.isArray(root.items)) {
 
-      // 1. THE AGGRESSIVE GUILLOTINE (Pemenggal Anti-Halusinasi)
+      // --- CONFIGURATION DICTIONARY ---
+      const CONFIG = {
+        ATTACHMENT_INDICATORS: ['4M-', 'THIRD-PARTY OPERATOR', 'SEE ATTACHMENT'],
+        INVALID_PACKAGES: ['C/NO'],
+        VALID_ORIGIN_CODES: ['PSR', 'WO', 'PE', 'CTH', 'CTC', 'B', 'RVC', 'CC'],
+        PREFIX_STRIPPER_REGEX: /^\s*(?:[A-Z0-9\s]+)?\s*(?:\(\d+\))?\s*(?:CTNS?|BOXES?|PKGS?|SETS?|PALLETS?|CTN|PCS|PIECES)\s*OF\s+/i
+      };
+
+      // 1. THE GUILLOTINE (Pemenggal Lampiran)
       const attachmentIndex = root.items.findIndex((item) => {
         const prodStr = String(item.prod_number || '').toUpperCase();
         const descStr = String(item.description || '').toUpperCase();
         const pkgStr = String(item.type_package || '').toUpperCase();
         const ocStr = String(item.origin_criteria || '').toUpperCase();
 
-        // Deteksi absolut lampiran, mengabaikan halusinasi hs_code
-        return prodStr.includes('4M-') ||
-               descStr.includes('4M-') ||
-               descStr.includes('THIRD-PARTY OPERATOR') ||
-               descStr.includes('SEE ATTACHMENT') ||
-               pkgStr.includes('C/NO') ||
-               ocStr === 'INDONESIA';
+        const hasAttachmentKeyword = CONFIG.ATTACHMENT_INDICATORS.some((keyword) =>
+          prodStr.includes(keyword) || descStr.includes(keyword)
+        );
+        const hasInvalidPackage = CONFIG.INVALID_PACKAGES.some((keyword) => pkgStr.includes(keyword));
+        const isAnomalousOrigin = ocStr.length > 4 && !CONFIG.VALID_ORIGIN_CODES.includes(ocStr);
+
+        return hasAttachmentKeyword || hasInvalidPackage || isAnomalousOrigin;
       });
 
       if (attachmentIndex !== -1) {
         root.items = root.items.slice(0, attachmentIndex);
       }
 
-      // 2. PRE-CLEANSING
+      // 2. PRE-CLEANSING & GHOST ROW KILLER (Pembersihan Lapis 1)
+      // Bunuh baris kosong (Ghost Rows) hasil halusinasi LLM
+      root.items = root.items.filter((item) => {
+        const hasDesc = !!item.description && item.description.trim().length > 0;
+        const hasPrice = !!item.unit_value;
+        const hasWeight = !!item.gross_weight;
+
+        // Jika tidak ada deskripsi, tidak ada harga, dan tidak ada berat -> BUNUH!
+        return hasDesc || hasPrice || hasWeight;
+      });
+
       root.items.forEach((item) => {
         if (typeof item.unit_value === 'string') {
-          // Hanya ambil harga
           const numBlocks = item.unit_value.replace(/,/g, '').match(/\d+(?:\.\d+)?/g);
           item.unit_value = (numBlocks && numBlocks.length > 0) ? Number(numBlocks[numBlocks.length - 1]) : null;
         }
@@ -387,18 +404,19 @@ const rulesRegistry = {
           item.number_package = numMatch ? Number(numMatch[0]) : item.number_package;
         }
         if (typeof item.gross_weight === 'string' && item.gross_weight.toUpperCase().match(/[A-Z]/)) {
-          item.gross_weight = null; // Netralkan huruf di weight
+          item.gross_weight = null;
         }
       });
 
-      // 3. ROW STITCHER (Penjahit Baris)
+      // 3. ROW STITCHER (Logika Penjahit Universal)
       const mergedItems = [];
       for (let i = 0; i < root.items.length; i++) {
         const currentItem = root.items[i];
-        const desc = String(currentItem.description || '').trim().toUpperCase();
+        const descLength = String(currentItem.description || '').trim().length;
 
-        // Fragment valid jika tidak punya harga ATAU deskripsi dirusak AI menjadi kata sambung
-        const isFragment = !currentItem.unit_value || /^(OF|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)$/.test(desc);
+        // Fragment Mutlak: Jika harga dan berat sama-sama kosong
+        const isMissingVitalData = !currentItem.unit_value && !currentItem.gross_weight;
+        const isFragment = isMissingVitalData || (descLength > 0 && descLength <= 8);
 
         if (isFragment && i + 1 < root.items.length) {
           const nextItem = root.items[i + 1];
@@ -407,7 +425,7 @@ const rulesRegistry = {
             ...currentItem,
             unit_value: nextItem.unit_value || currentItem.unit_value,
             prod_number: (nextItem.prod_number && String(nextItem.prod_number).length > 2) ? nextItem.prod_number : currentItem.prod_number,
-            description: (!/^(OF|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)$/.test(desc) && currentItem.description)
+            description: (currentItem.description && descLength > 8)
               ? `${currentItem.description} ${nextItem.description || ''}`.trim()
               : nextItem.description,
             gross_weight: currentItem.gross_weight || nextItem.gross_weight,
@@ -426,7 +444,6 @@ const rulesRegistry = {
       mergedItems.forEach((item, index) => {
         item.item_number = String(index + 1);
 
-        // Rescue Prod Number jika AI gagal
         if (!item.prod_number && item.description) {
           const prodMatch = item.description.match(/\(([^)]+\/[^)]+)\)/);
           if (prodMatch) item.prod_number = prodMatch[1];
@@ -438,7 +455,7 @@ const rulesRegistry = {
 
         if (item.description) {
           item.description = item.description.replace(/\([^)]+\/[^)]+\)/g, '').replace(/HS\s*CODE:?\s*\d+(?:\.\d+)?/gi, '').trim();
-          item.description = item.description.replace(/^(?:ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|\d+)\s*(?:\(\d+\))?\s*(?:CTNS?|BOXES?|PKGS?|SETS?|PALLETS?|CTN)\s*OF\s+/i, '').trim();
+          item.description = item.description.replace(CONFIG.PREFIX_STRIPPER_REGEX, '').trim();
         }
       });
 
