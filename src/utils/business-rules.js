@@ -1,3 +1,4 @@
+
 /* eslint-disable camelcase */
 import { getCountryFromIATA } from './mapper/airport-mapper.js';
 import { getCountryCode } from './mapper/country-mapper.js';
@@ -354,12 +355,20 @@ const rulesRegistry = {
 
     if (Array.isArray(root.items)) {
 
-      // 1. THE GUILLOTINE (Pemenggal Lampiran) - Bekerja Sempurna
+      // 1. THE AGGRESSIVE GUILLOTINE (Pemenggal Anti-Halusinasi)
       const attachmentIndex = root.items.findIndex((item) => {
         const prodStr = String(item.prod_number || '').toUpperCase();
+        const descStr = String(item.description || '').toUpperCase();
         const pkgStr = String(item.type_package || '').toUpperCase();
         const ocStr = String(item.origin_criteria || '').toUpperCase();
-        return prodStr.includes('4M-') || pkgStr.includes('C/NO') || ocStr === 'INDONESIA';
+
+        // Deteksi absolut lampiran, mengabaikan halusinasi hs_code
+        return prodStr.includes('4M-') ||
+               descStr.includes('4M-') ||
+               descStr.includes('THIRD-PARTY OPERATOR') ||
+               descStr.includes('SEE ATTACHMENT') ||
+               pkgStr.includes('C/NO') ||
+               ocStr === 'INDONESIA';
       });
 
       if (attachmentIndex !== -1) {
@@ -368,44 +377,37 @@ const rulesRegistry = {
 
       // 2. PRE-CLEANSING
       root.items.forEach((item) => {
-        // Ekstrak Harga Mutlak
         if (typeof item.unit_value === 'string') {
+          // Hanya ambil harga
           const numBlocks = item.unit_value.replace(/,/g, '').match(/\d+(?:\.\d+)?/g);
-          if (numBlocks && numBlocks.length > 0) {
-            item.unit_value = Number(numBlocks[numBlocks.length - 1]);
-          } else {
-            item.unit_value = null;
-          }
+          item.unit_value = (numBlocks && numBlocks.length > 0) ? Number(numBlocks[numBlocks.length - 1]) : null;
         }
-        // Bersihkan kemasan
         if (typeof item.number_package === 'string') {
           const numMatch = item.number_package.match(/\d+/);
           item.number_package = numMatch ? Number(numMatch[0]) : item.number_package;
         }
-        if (typeof item.gross_weight === 'string' && item.gross_weight.toUpperCase().includes('SET')) {
-          item.gross_weight = null;
+        if (typeof item.gross_weight === 'string' && item.gross_weight.toUpperCase().match(/[A-Z]/)) {
+          item.gross_weight = null; // Netralkan huruf di weight
         }
       });
 
-      // 3. STRICT ROW STITCHER (Penjahit Presisi Tinggi)
+      // 3. ROW STITCHER (Penjahit Baris)
       const mergedItems = [];
       for (let i = 0; i < root.items.length; i++) {
         const currentItem = root.items[i];
+        const desc = String(currentItem.description || '').trim().toUpperCase();
 
-        // HUKUM MUTLAK: Fragment HANYA valid jika tidak punya harga. Dilarang pakai regex deskripsi!
-        const isFragment = !currentItem.unit_value;
+        // Fragment valid jika tidak punya harga ATAU deskripsi dirusak AI menjadi kata sambung
+        const isFragment = !currentItem.unit_value || /^(OF|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)$/.test(desc);
 
         if (isFragment && i + 1 < root.items.length) {
           const nextItem = root.items[i + 1];
 
           const stitchedItem = {
             ...currentItem,
-            unit_value: nextItem.unit_value,
-            prod_number: (nextItem.prod_number && String(nextItem.prod_number).length > 2)
-              ? nextItem.prod_number
-              : currentItem.prod_number,
-            // Gabungkan deskripsi
-            description: (currentItem.description && !/^(OF|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)$/i.test(currentItem.description.trim()))
+            unit_value: nextItem.unit_value || currentItem.unit_value,
+            prod_number: (nextItem.prod_number && String(nextItem.prod_number).length > 2) ? nextItem.prod_number : currentItem.prod_number,
+            description: (!/^(OF|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)$/.test(desc) && currentItem.description)
               ? `${currentItem.description} ${nextItem.description || ''}`.trim()
               : nextItem.description,
             gross_weight: currentItem.gross_weight || nextItem.gross_weight,
@@ -413,33 +415,29 @@ const rulesRegistry = {
             number_package: currentItem.number_package || nextItem.number_package,
             origin_criteria: currentItem.origin_criteria || nextItem.origin_criteria
           };
-
           mergedItems.push(stitchedItem);
-          i++; // Lompati item sebelahnya karena sudah disedot
+          i++;
         } else {
           mergedItems.push(currentItem);
         }
       }
 
-      // 4. ABSOLUTE RE-INDEXING & FINAL BRACKET PARSING
+      // 4. SANITIZATION & RE-INDEXING
       mergedItems.forEach((item, index) => {
         item.item_number = String(index + 1);
 
-        // Membersihkan kurung dan sisa kemasan di prod_number
+        // Rescue Prod Number jika AI gagal
+        if (!item.prod_number && item.description) {
+          const prodMatch = item.description.match(/\(([^)]+\/[^)]+)\)/);
+          if (prodMatch) item.prod_number = prodMatch[1];
+        }
+
         if (item.prod_number) {
-          item.prod_number = item.prod_number.replace(/\/\d*\s*[A-Z]*CTNS?/gi, '').trim();
-          item.prod_number = item.prod_number.replace(/^\(/, '').replace(/\)$/, '').trim();
-          item.prod_number = item.prod_number.replace(/,$/, '').trim();
+          item.prod_number = item.prod_number.replace(/\/\d*\s*[A-Z]+(?:\s+ONLY)?$/gi, '').replace(/[()]/g, '').trim();
         }
 
-        // Membersihkan nama barang dari kurung
-        if (item.description && item.description.includes('(')) {
-          const descMatch = item.description.match(/^([^(]+)/);
-          if (descMatch) item.description = descMatch[1].trim();
-        }
-
-        // [NEW] PREFIX STRIPPER: Membuang awalan kemasan (Contoh: "TWO (2) CTNS OF ") secara aman
         if (item.description) {
+          item.description = item.description.replace(/\([^)]+\/[^)]+\)/g, '').replace(/HS\s*CODE:?\s*\d+(?:\.\d+)?/gi, '').trim();
           item.description = item.description.replace(/^(?:ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|\d+)\s*(?:\(\d+\))?\s*(?:CTNS?|BOXES?|PKGS?|SETS?|PALLETS?|CTN)\s*OF\s+/i, '').trim();
         }
       });
