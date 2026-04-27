@@ -274,7 +274,7 @@ const rulesRegistry = {
     const root = data.data || data;
 
     if (Array.isArray(root.items)) {
-      // 1. SMART-FILTER: The Anti-Attachment Guard (Buang item berawalan "4M-")
+      // 1. SMART-FILTER: The Anti-Attachment Guard
       root.items = root.items.filter((item) => {
         const prodStr = String(item.prod_number || '');
         const descStr = String(item.description || '');
@@ -293,23 +293,7 @@ const rulesRegistry = {
         }
         currentItemNumber++;
 
-        // B. Fallback Bracket Parsing
-        if (!item.prod_number && item.description && item.description.includes('(')) {
-          const match = item.description.match(/(.*?)\s*\((.*?)\)/);
-          if (match) {
-            item.description = match[1].trim();
-            item.prod_number = match[2].trim();
-          }
-        }
-
-        // C. Sanitization: prod_number (Menghapus sisa kemasan)
-        if (item.prod_number) {
-          item.prod_number = item.prod_number.replace(/\/\d*\s*[A-Z]*CTNS?/gi, '').trim();
-          item.prod_number = item.prod_number.replace(/^\(/, '').replace(/\)$/, '').trim();
-          item.prod_number = item.prod_number.replace(/,$/, '').trim();
-        }
-
-        // D. Sanitization: unit_value (Ekstrak float murni)
+        // B. Sanitization: unit_value (Ekstrak float murni)
         if (typeof item.unit_value === 'string') {
           const floatMatch = item.unit_value.replace(/,/g, '').match(/[\d]+\.\d+/);
           if (floatMatch) {
@@ -320,17 +304,47 @@ const rulesRegistry = {
           }
         }
 
-        // E. Standarisasi UoM Packages
+        // C. Standarisasi UoM Packages
         if (item.type_package) {
           item.type_package = standardizePackagingUnit(item.type_package);
         }
 
-        // F. The "Quantity is Not Weight" Guard
+        // D. The "Quantity vs Net Weight vs Gross Weight" Guard
         if (item.gross_weight !== null && item.gross_weight !== undefined) {
           const gwStr = String(item.gross_weight).toUpperCase();
-          if (gwStr.includes('PIECE') || gwStr.includes('PCS') || gwStr.includes('SET') || gwStr.includes('UNIT')) {
+          // Jika AI mengirim satuan kuantitas (PIECES/SETS) ATAU Net Weight (N.W.)
+          if (
+            gwStr.includes('PIECE') || gwStr.includes('PCS') ||
+            gwStr.includes('SET') || gwStr.includes('UNIT') ||
+            gwStr.includes('N.W') || gwStr.includes('N. W') ||
+            gwStr.includes('NET WEIGHT')
+          ) {
             item.gross_weight = null;
           }
+        }
+
+        // E. Sanitization: description (Memangkas "Trailer Noise")
+        if (item.description && typeof item.description === 'string') {
+          let desc = item.description;
+
+          // Potong di kemunculan pertama "HS CODE" (case insensitive)
+          const hsMatch = desc.match(/HS\s*CODE/i);
+          if (hsMatch) desc = desc.substring(0, hsMatch.index);
+
+          // Potong di kemunculan pertama "TOTAL:"
+          const totalMatch = desc.match(/TOTAL:/i);
+          if (totalMatch) desc = desc.substring(0, totalMatch.index);
+
+          // Potong di kemunculan pertama "THIRD-PARTY" atau "THIRD PARTY"
+          const thirdPartyMatch = desc.match(/THIRD-?PARTY/i);
+          if (thirdPartyMatch) desc = desc.substring(0, thirdPartyMatch.index);
+
+          // Potong di simbol "***" (tanda pemisah tabel)
+          const starMatch = desc.match(/\*\*\*/);
+          if (starMatch) desc = desc.substring(0, starMatch.index);
+
+          // Update description dengan teks yang sudah bersih
+          item.description = desc.trim();
         }
       });
     }
