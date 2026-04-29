@@ -1,6 +1,8 @@
+/* eslint-disable prefer-const */
 /* eslint-disable camelcase */
 import dotenv from 'dotenv';
 import path from 'path';
+import * as xlsx from 'xlsx';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { Queue, Worker } from 'bullmq';
@@ -19,8 +21,8 @@ import { extractionQueue } from './extraction-queue.js';
 
 import { processPdfBoundary } from './handlers/pdf-boundary.js';
 import { processImageBoundary } from './handlers/image-boundary.js';
-import { processExcelBoundary } from './handlers/excel-boundary.js';
 import { loadMasterPdf, splitAndUploadPdf, uploadNonPdfFile } from './handlers/pdf-splitter.js';
+import { convertExcelToPdf } from '../services/integrations/gotenberg.js';
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -39,16 +41,76 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
   console.log('\n===========================================');
   console.log(`[BOUNDARY WORKER] Job ID: ${job.id} | Dimulai`);
 
-  const { sourceFileId, absoluteFilePath, fileName, mimeType, manualDocType } = job.data;
+  // Kita gunakan 'let' pada absoluteFilePath dan mimeType agar bisa diubah.
+  let { sourceFileId, absoluteFilePath, fileName, mimeType, manualDocType } = job.data;
   const startTime = new Date();
 
   try {
     await SourceFileRepositories.updateStatus(sourceFileId, 'processing');
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'processing', progress: 5 });
 
+    let isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+
+    // ==============================================================
+    // 🪄 ILUSI GOTENBERG & SANITASI EXCEL
+    // ==============================================================
+    if (isExcel) {
+      console.log('[BOUNDARY WORKER] Menerima Excel. Memulai sanitasi Hidden Sheets...');
+
+      // 1. Baca buffer Excel asli menggunakan xlsx
+      const rawExcelBuffer = await fs.readFile(absoluteFilePath);
+      const workbook = xlsx.read(rawExcelBuffer, { type: 'buffer' });
+
+      // 2. Buat Workbook baru yang kosong (untuk menampung sheet yang bersih)
+      const cleanWorkbook = xlsx.utils.book_new();
+      let hasVisibleSheets = false;
+
+      // 3. Looping semua sheet, filter yang tersembunyi
+      workbook.SheetNames.forEach((sheetName, index) => {
+        // Cek metadata SheetJS. Hidden: 0 (Visible), 1 (Hidden), 2 (Very Hidden)
+        const sheetMeta = workbook.Workbook && workbook.Workbook.Sheets && workbook.Workbook.Sheets[index];
+        const isHidden = sheetMeta ? (sheetMeta.Hidden === 1 || sheetMeta.Hidden === 2) : false;
+
+        if (!isHidden) {
+          // Jika visible, masukkan ke workbook yang bersih
+          xlsx.utils.book_append_sheet(cleanWorkbook, workbook.Sheets[sheetName], sheetName);
+          hasVisibleSheets = true;
+          console.log(`[BOUNDARY WORKER] Sheet dipertahankan: "${sheetName}"`);
+        } else {
+          console.log(`[BOUNDARY WORKER] Sheet dibuang (Hidden): "${sheetName}"`);
+        }
+      });
+
+      // Validasi Ekstrem: Klien usil nge-hide semua sheet
+      if (!hasVisibleSheets) {
+        throw new Error('VALIDATION_ERROR: File Excel ini kosong atau semua sheet disembunyikan (Hidden) oleh pengirim.');
+      }
+
+      // 4. Ubah kembali Workbook bersih menjadi Buffer
+      console.log('[BOUNDARY WORKER] ⚙️ Sanitasi selesai. Menginisiasi konversi Background Gotenberg...');
+      const cleanExcelBuffer = xlsx.write(cleanWorkbook, { type: 'buffer', bookType: 'xlsx' });
+
+      // 5. Lempar Buffer yang sudah bersih ke Gotenberg
+      const pdfBuffer = await convertExcelToPdf(cleanExcelBuffer, fileName);
+
+      // 6. Tentukan nama file baru (ganti ekstensi jadi .pdf)
+      const parsedPath = path.parse(absoluteFilePath);
+      const newPdfPath = path.join(parsedPath.dir, `${parsedPath.name}_converted.pdf`);
+
+      // 7. Simpan file PDF baru ke disk
+      await fs.writeFile(newPdfPath, pdfBuffer);
+
+      // 8. Ubah identitas Job agar seluruh pipeline di bawahnya mengira ini adalah PDF!
+      absoluteFilePath = newPdfPath;
+      mimeType = 'application/pdf';
+      isExcel = false;
+
+      console.log('[BOUNDARY WORKER] Excel kini diperlakukan sebagai PDF.');
+    }
+
+    // Identifikasi ulang mimeType setelah proses (mungkin) konversi
     const isPdf = mimeType === 'application/pdf';
     const isImage = mimeType.startsWith('image/');
-    const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
 
     // -------------------------------------------------------
     // FASE 1: SEGMENTASI (Routing ke Handler)
@@ -63,11 +125,8 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       console.log('[BOUNDARY WORKER] Mode: Image');
       fileBuffer = await fs.readFile(absoluteFilePath);
       segmentationResult = await processImageBoundary(fileBuffer, mimeType, manualDocType);
-    } else if (isExcel) {
-      console.log('[BOUNDARY WORKER] Mode: Excel');
-      fileBuffer = await fs.readFile(absoluteFilePath);
-      segmentationResult = processExcelBoundary(fileBuffer, fileName, manualDocType);
     } else {
+      // Karena isExcel sudah kita ubah menjadi false, jika sampai sini berarti benar-benar format lain.
       throw new Error(`UNSUPPORTED_MIME: Tipe file tidak didukung: ${mimeType}`);
     }
 
@@ -147,7 +206,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
           documentId: docRecord.id,
           sourceFileId,
           splitFilePath,
-          docCode: doc.doc_code,
+          docCode: doc.doc_code, // 🚨 Dokumen ini sekarang akan di-ekstrak layaknya PDF.
           mimeType,
           sheetName: doc.sheetName ?? null
         }, {
@@ -180,6 +239,6 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
   }
 }, {
   connection,
-  concurrency: 1,
+  concurrency: 1, // Tetap 1 untuk antrean boundary.
   lockDuration: 15 * 60 * 1000
 });
