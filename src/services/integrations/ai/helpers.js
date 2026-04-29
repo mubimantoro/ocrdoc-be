@@ -112,10 +112,11 @@ export const mergeArraysDeep = (master, batch) => {
 };
 
 /**
- * THE SELF-HEALING ENGINE
+ * THE ENTERPRISE SELF-HEALING ENGINE (Exponential Backoff + Circuit Breaker)
  */
-export const callGeminiWithRetry = async (geminiContents, maxRetries = 2) => {
+export const callGeminiWithRetry = async (geminiContents, maxRetries = 3) => {
   let attempt = 0;
+
   while (attempt < maxRetries) {
     try {
       attempt++;
@@ -124,7 +125,7 @@ export const callGeminiWithRetry = async (geminiContents, maxRetries = 2) => {
         contents: geminiContents,
         config: {
           responseMimeType: 'application/json',
-          temperature: 0.1 + (attempt * 0.1),
+          temperature: 0.0,
           maxOutputTokens: 20480,
           safetySettings
         }
@@ -136,10 +137,23 @@ export const callGeminiWithRetry = async (geminiContents, maxRetries = 2) => {
       }
 
       return { parsedData: cleanAIJson(response.text), usageMetadata: response.usageMetadata || {} };
+
     } catch (error) {
-      console.warn(`\n[AI-SERVICE] ⚠️ JSON Truncation Error pada Attempt ${attempt}/${maxRetries}: ${error.message}`);
-      if (attempt >= maxRetries) throw new Error(`AI Gagal mereturn JSON valid: ${error.message}`);
-      await new Promise((res) => setTimeout(res, 2000));
+      const isRateLimit = error.message && error.message.includes('429');
+      const isServiceUnavailable = error.message && error.message.includes('503');
+
+      console.warn(`\n[AI-SERVICE] ⚠️ Error API (Attempt ${attempt}/${maxRetries}): ${error.message}`);
+
+      if (attempt >= maxRetries) {
+        // BREAK THE CIRCUIT! Lempar error mutlak agar Worker menandainya failed.
+        throw new Error(`AI API Error setelah ${maxRetries} percobaan: ${error.message}`);
+      }
+
+      // EXPONENTIAL BACKOFF: Jeda tunggu bertambah lama setiap kali gagal.
+      // Jika Rate Limit, tunggu 5 detik. Jika error JSON biasa, tunggu eksponensial.
+      const delayMs = (isRateLimit || isServiceUnavailable) ? 5000 : (1000 * Math.pow(2, attempt));
+      console.warn(`[AI-SERVICE] 🔄 Jeda ${delayMs}ms sebelum mencoba ulang...`);
+      await new Promise((res) => setTimeout(res, delayMs));
     }
   }
 };
