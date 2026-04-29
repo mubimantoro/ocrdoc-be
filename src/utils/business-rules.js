@@ -238,12 +238,13 @@ const rulesRegistry = {
   // ==========================================
   '740': async (data) => {
     const root = data.data || data;
-    // Shipper Country
+
+    // 1. Shipper Country
     if (root.shipper_country && !root.shipper_country_code) {
       root.shipper_country_code = getCountryCode(root.shipper_country);
     }
 
-    // Airport Country Codes
+    // 2. Airport Country Codes
     if (root.departure_airport_code && !root.departure_airport_country_code) {
       root.departure_airport_country_code = await getCountryFromIATA(root.departure_airport_code);
     }
@@ -256,7 +257,7 @@ const rulesRegistry = {
       root.destination_airport_country_code = await getCountryFromIATA(root.destination_airport_code);
     }
 
-    // 3. Deterministic Guard
+    // 3. Deterministic Guard (Truncate Hallucinated Packs)
     if (Array.isArray(root.packs) && root.packs.length > 0) {
       if (root.packs.length > 1) {
         console.warn(`[Business Rules] AWB ${root.awb_num || 'N/A'}: LLM Hallucination (packs > 1). Forcing truncation.`);
@@ -266,6 +267,44 @@ const rulesRegistry = {
       const topLevelPack = root.packs[0];
       if (root.box_num) topLevelPack.no_pieces = String(root.box_num);
       if (root.weight) topLevelPack.weight = String(root.weight);
+    }
+
+    // 4. CROSS-FIELD DATE ASSEMBLER
+    // Merakit departure_date jika LLM mengembalikan null, menggunakan kombinasi flight_num & doc_date
+    if (!root.departure_date && root.flight_num && root.doc_date) {
+      // Cek apakah ada garis miring diikuti angka 1-2 digit di akhir string (misal: "BR237/29")
+      const dayMatch = String(root.flight_num).match(/\/(\d{1,2})$/);
+
+      if (dayMatch) {
+        const flightDay = parseInt(dayMatch[1], 10);
+        const docDateParts = String(root.doc_date).split('-');
+
+        if (docDateParts.length === 3) {
+          let year = parseInt(docDateParts[0], 10);
+          let month = parseInt(docDateParts[1], 10) - 1; // JavaScript Date month index (0-11)
+          const docDay = parseInt(docDateParts[2], 10);
+
+          // 🚨 SMART ROLLOVER PROTECTION
+          // Jika hari penerbangan lebih kecil jauh dari hari eksekusi dokumen (misal Doc: Tgl 31, Flight: Tgl 1),
+          // maka itu artinya penerbangannya di bulan berikutnya.
+          if (flightDay < docDay - 10) {
+            month += 1;
+            if (month > 11) {
+              month = 0; // Reset ke Januari
+              year += 1; // Maju ke tahun depan
+            }
+          }
+
+          // Bangun dan format tanggal kembali menjadi YYYY-MM-DD
+          const finalDate = new Date(Date.UTC(year, month, flightDay));
+          root.departure_date = finalDate.toISOString().split('T')[0];
+        }
+      }
+    }
+
+    // Pembersihan Akhir: Rapikan flight_num dari imbuhan hari (e.g. "BR237/29" menjadi "BR237")
+    if (root.flight_num) {
+      root.flight_num = String(root.flight_num).replace(/\/\d{1,2}$/, '').trim();
     }
   },
   // ==========================================
