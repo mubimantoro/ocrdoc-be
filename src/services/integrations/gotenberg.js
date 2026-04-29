@@ -1,0 +1,67 @@
+/**
+ * MICROSERVICE: Gotenberg Excel to PDF Converter
+ * Menerima Buffer Excel, mengembalikan Buffer PDF.
+ * * Menggunakan Native Fetch API (Node 18+) agar ringan dan tidak butuh form-data pihak ketiga.
+ */
+export const convertExcelToPdf = async (excelBuffer, originalFileName) => {
+  console.log(`[GOTENBERG] Memulai konversi Excel ke PDF untuk file: ${originalFileName}...`);
+  const startTime = Date.now();
+
+  const GOTENBERG_URL = process.env.GOTENBERG_URL;
+  const USER = process.env.GOTENBERG_USER;
+  const PASS = process.env.GOTENBERG_PASS;
+
+  const headers = {};
+  if (USER && PASS) {
+    headers['Authorization'] = `Basic ${Buffer.from(`${USER}:${PASS}`).toString('base64')}`;
+  }
+
+  try {
+    // Gunakan Native FormData
+    const formData = new FormData();
+
+    // Ubah Buffer Node.js menjadi Blob (Standar Web yang diterima fetch)
+    const excelBlob = new Blob([excelBuffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+
+    // Gotenberg mewajibkan key form-data bernama 'files'
+    // Fallback nama file ke document.xlsx jika tidak disediakan
+    formData.append('files', excelBlob, originalFileName || 'document.xlsx');
+
+    // KUNCI VISUAL: Render sebagai Landscape (karena tabel Packing List/Invoice seringkali lebar)
+    formData.append('landscape', 'true');
+
+    // (Opsional) Jika ingin tabel di-fit ke 1 lebar halaman agar tidak terpotong
+    // formData.append('scale', '0.9');
+
+    const response = await fetch(GOTENBERG_URL, {
+      method: 'POST',
+      headers: headers, // Header dinamis (dengan atau tanpa auth)
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gotenberg Error ${response.status}: ${errorText}`);
+    }
+
+    // Ambil hasil response berupa binary (ArrayBuffer) lalu ubah kembali jadi Node.js Buffer
+    const pdfArrayBuffer = await response.arrayBuffer();
+    const pdfBuffer = Buffer.from(pdfArrayBuffer);
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`[GOTENBERG] Konversi sukses dalam ${duration} detik. Ukuran PDF: ${(pdfBuffer.length / 1024).toFixed(2)} KB`);
+
+    return pdfBuffer;
+
+  } catch (error) {
+    console.error('[GOTENBERG] Gagal mengonversi Excel ke PDF:', error.message);
+
+    if (error.cause) {
+      console.error('[GOTENBERG Detail Penyebab:', error.cause);
+    }
+
+    throw error;
+  }
+};
