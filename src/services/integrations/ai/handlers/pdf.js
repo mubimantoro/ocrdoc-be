@@ -178,7 +178,7 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   //   - Halaman TERAKHIR (N) : Full Prompt (Tangkap Total, Tanda Tangan, Footer)
   // ================================================================
   console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages - 1} worker paralel...`);
-  const itemOnlyPrompt = getItemOnlyExtractionPrompt(jsonSchema);
+  const itemOnlyPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema);
 
   // Helper & Konstanta dideklarasikan DI SINI agar tersedia saat
   // async worker paralel resolve (mencegah Temporal Dead Zone error)

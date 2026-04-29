@@ -352,116 +352,140 @@ const rulesRegistry = {
   // ==========================================
   '861': (data) => {
     const root = data.data || data;
+    if (!Array.isArray(root.items)) return;
 
-    if (Array.isArray(root.items)) {
+    const CONFIG = {
+      ATTACHMENT_INDICATORS: ['4M-', 'C/NO', 'SEE ATTACHMENT', 'THIRD-PARTY'],
+      VALID_ORIGIN_CODES: ['PSR', 'WO', 'PE', 'CTH', 'CTC', 'B', 'RVC', 'CC', 'A', 'C', 'D'],
+      NOISE_REGEX: /(?:THIRD-PARTY OPERATOR|SEE ATTACHMENT|THIS IS TO CERTIFY|WE|TOTAL)[\s\S]*/i
+    };
 
-      // --- CONFIGURATION DICTIONARY ---
-      const CONFIG = {
-        ATTACHMENT_INDICATORS: ['4M-', 'THIRD-PARTY OPERATOR', 'SEE ATTACHMENT'],
-        INVALID_PACKAGES: ['C/NO'],
-        VALID_ORIGIN_CODES: ['PSR', 'WO', 'PE', 'CTH', 'CTC', 'B', 'RVC', 'CC'],
-        PREFIX_STRIPPER_REGEX: /^\s*(?:[A-Z0-9\s]+)?\s*(?:\(\d+\))?\s*(?:CTNS?|BOXES?|PKGS?|SETS?|PALLETS?|CTN|PCS|PIECES)\s*OF\s+/i
+    // 1. GUILLOTINE FILTER & SANITIZATION
+    root.items = root.items.filter((item) => {
+      const prodStr = String(item.prod_number || '').toUpperCase();
+      const descStr = String(item.description || '').toUpperCase();
+      const pkgStr = String(item.type_package || '').toUpperCase();
+
+      const isAttachment = CONFIG.ATTACHMENT_INDICATORS.some((ind) => prodStr.includes(ind) || descStr.includes(ind)) || pkgStr.includes('C/NO');
+      return !isAttachment;
+    }).map((item) => {
+      const parseNum = (val) => {
+        if (typeof val === 'number') return val;
+        if (typeof val === 'string') {
+          const match = val.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+          return match ? parseFloat(match[0]) : null;
+        }
+        return null;
       };
 
-      // 1. THE GUILLOTINE (Pemenggal Lampiran)
-      const attachmentIndex = root.items.findIndex((item) => {
-        const prodStr = String(item.prod_number || '').toUpperCase();
-        const descStr = String(item.description || '').toUpperCase();
-        const pkgStr = String(item.type_package || '').toUpperCase();
-        const ocStr = String(item.origin_criteria || '').toUpperCase();
+      item.unit_value = parseNum(item.unit_value);
+      item.gross_weight = parseNum(item.gross_weight);
+      item.number_package = parseNum(item.number_package);
 
-        const hasAttachmentKeyword = CONFIG.ATTACHMENT_INDICATORS.some((keyword) =>
-          prodStr.includes(keyword) || descStr.includes(keyword)
-        );
-        const hasInvalidPackage = CONFIG.INVALID_PACKAGES.some((keyword) => pkgStr.includes(keyword));
-        const isAnomalousOrigin = ocStr.length > 4 && !CONFIG.VALID_ORIGIN_CODES.includes(ocStr);
+      const ocStr = String(item.origin_criteria || '').replace(/[^A-Z]/g, '').toUpperCase();
+      item.origin_criteria = CONFIG.VALID_ORIGIN_CODES.includes(ocStr) ? ocStr : null;
 
-        return hasAttachmentKeyword || hasInvalidPackage || isAnomalousOrigin;
-      });
-
-      if (attachmentIndex !== -1) {
-        root.items = root.items.slice(0, attachmentIndex);
+      if (item.description) {
+        item.description = item.description.replace(CONFIG.NOISE_REGEX, '').replace(/\s{2,}/g, ' ').trim();
       }
+      return item;
+    });
 
-      // 2. PRE-CLEANSING & GHOST ROW KILLER (Pembersihan Lapis 1)
-      // Bunuh baris kosong (Ghost Rows) hasil halusinasi LLM
-      root.items = root.items.filter((item) => {
-        const hasDesc = !!item.description && item.description.trim().length > 0;
-        const hasPrice = !!item.unit_value;
-        const hasWeight = !!item.gross_weight;
+    // 2. BACKWARD STITCHING & STRICT DEDUPLICATION (The Safe-Healing Engine)
+    const processedItems = [];
+    for (let i = 0; i < root.items.length; i++) {
+      const curr = root.items[i];
 
-        // Jika tidak ada deskripsi, tidak ada harga, dan tidak ada berat -> BUNUH!
-        return hasDesc || hasPrice || hasWeight;
-      });
+      const isNullItemNumber = curr.item_number === null || String(curr.item_number).trim() === '';
+      const isMissingPrice = curr.unit_value === null;
+      const isMissingWeight = curr.gross_weight === null;
+      const isMissingVitalData = isMissingPrice && isMissingWeight;
 
-      root.items.forEach((item) => {
-        if (typeof item.unit_value === 'string') {
-          const numBlocks = item.unit_value.replace(/,/g, '').match(/\d+(?:\.\d+)?/g);
-          item.unit_value = (numBlocks && numBlocks.length > 0) ? Number(numBlocks[numBlocks.length - 1]) : null;
+      if (processedItems.length > 0) {
+        const prev = processedItems[processedItems.length - 1];
+
+        const isPriceCollision = !isMissingPrice && prev.unit_value !== null;
+        const isWeightCollision = !isMissingWeight && prev.gross_weight !== null;
+        const prevIsIncomplete = prev.unit_value === null || prev.gross_weight === null;
+
+        // 🛠️ LOGIKA 1: COMPLEMENTARY STITCHING (Menyembuhkan Item 12 & 13 yang terbelah)
+        // Jahit JIKA: Tidak ada tabrakan pilar data, DAN (Instruksi eksplisit LLM ATAU prev cacat)
+        if (!isPriceCollision && !isWeightCollision && (isNullItemNumber || prevIsIncomplete)) {
+          prev.unit_value = prev.unit_value ?? curr.unit_value;
+          prev.gross_weight = prev.gross_weight ?? curr.gross_weight;
+          prev.number_package = prev.number_package ?? curr.number_package;
+          prev.type_package = prev.type_package || curr.type_package;
+          prev.origin_criteria = prev.origin_criteria || curr.origin_criteria;
+
+          if (curr.prod_number && !prev.prod_number) prev.prod_number = curr.prod_number;
+
+          const currDesc = String(curr.description || '').trim();
+          if (currDesc && !String(prev.description || '').includes(currDesc)) {
+            prev.description = `${prev.description || ''} ${currDesc}`.trim();
+          }
+          continue; // Penjahitan sukses, lewati!
         }
-        if (typeof item.number_package === 'string') {
-          const numMatch = item.number_package.match(/\d+/);
-          item.number_package = numMatch ? Number(numMatch[0]) : item.number_package;
-        }
-        if (typeof item.gross_weight === 'string' && item.gross_weight.toUpperCase().match(/[A-Z]/)) {
-          item.gross_weight = null;
-        }
-      });
 
-      // 3. ROW STITCHER (Logika Penjahit Universal)
-      const mergedItems = [];
-      for (let i = 0; i < root.items.length; i++) {
-        const currentItem = root.items[i];
-        const descLength = String(currentItem.description || '').trim().length;
+        // 🛠️ LOGIKA 2: STRICT DEDUPLICATION (Mencegah Data Loss Part Number & Membunuh Duplikat Page-Break)
+        // Gabungkan duplikat HANYA JIKA Harga & Berat sama, dan Part Number TIDAK BERKONFLIK!
+        if (!isMissingPrice && curr.unit_value === prev.unit_value && curr.gross_weight === prev.gross_weight) {
 
-        // Fragment Mutlak: Jika harga dan berat sama-sama kosong
-        const isMissingVitalData = !currentItem.unit_value && !currentItem.gross_weight;
-        const isFragment = isMissingVitalData || (descLength > 0 && descLength <= 8);
+          // 🚨 THE SAFE-GUARD: Deteksi Konflik Produk (Melindungi TR-100BK)
+          const hasProdConflict = curr.prod_number !== null && prev.prod_number !== null && curr.prod_number !== prev.prod_number;
 
-        if (isFragment && i + 1 < root.items.length) {
-          const nextItem = root.items[i + 1];
-
-          const stitchedItem = {
-            ...currentItem,
-            unit_value: nextItem.unit_value || currentItem.unit_value,
-            prod_number: (nextItem.prod_number && String(nextItem.prod_number).length > 2) ? nextItem.prod_number : currentItem.prod_number,
-            description: (currentItem.description && descLength > 8)
-              ? `${currentItem.description} ${nextItem.description || ''}`.trim()
-              : nextItem.description,
-            gross_weight: currentItem.gross_weight || nextItem.gross_weight,
-            type_package: currentItem.type_package || nextItem.type_package,
-            number_package: currentItem.number_package || nextItem.number_package,
-            origin_criteria: currentItem.origin_criteria || nextItem.origin_criteria
-          };
-          mergedItems.push(stitchedItem);
-          i++;
-        } else {
-          mergedItems.push(currentItem);
+          if (!hasProdConflict) {
+            if (curr.prod_number && !prev.prod_number) prev.prod_number = curr.prod_number;
+            const currDesc = String(curr.description || '').trim();
+            if (currDesc && !String(prev.description || '').includes(currDesc)) {
+              prev.description = `${prev.description || ''} ${currDesc}`.trim();
+            }
+            continue; // Aman untuk digabung! Duplikat dihancurkan.
+          }
         }
       }
 
-      // 4. SANITIZATION & RE-INDEXING
-      mergedItems.forEach((item, index) => {
-        item.item_number = String(index + 1);
+      // ☠️ THE KILL SWITCH
+      // Jika murni teks tanpa harga/berat, BUKAN fragment eksplisit LLM, dan gagal dijahit
+      if (isMissingVitalData && !isNullItemNumber) {
+        continue;
+      }
 
-        if (!item.prod_number && item.description) {
-          const prodMatch = item.description.match(/\(([^)]+\/[^)]+)\)/);
-          if (prodMatch) item.prod_number = prodMatch[1];
-        }
-
-        if (item.prod_number) {
-          item.prod_number = item.prod_number.replace(/\/\d*\s*[A-Z]+(?:\s+ONLY)?$/gi, '').replace(/[()]/g, '').trim();
-        }
-
-        if (item.description) {
-          item.description = item.description.replace(/\([^)]+\/[^)]+\)/g, '').replace(/HS\s*CODE:?\s*\d+(?:\.\d+)?/gi, '').trim();
-          item.description = item.description.replace(CONFIG.PREFIX_STRIPPER_REGEX, '').trim();
-        }
-      });
-
-      root.items = mergedItems;
+      // Baris Sah, daftarkan
+      if (String(curr.description || '').trim() !== '' || curr.unit_value !== null || curr.gross_weight !== null) {
+        processedItems.push(curr);
+      }
     }
-  },
+
+    // 3. FINAL POLISHING & ABSOLUTE RE-INDEXING
+    root.items = processedItems.map((item, index) => {
+      item.item_number = String(index + 1);
+
+      if (!item.prod_number && item.description) {
+        const prodMatch = item.description.match(/\(([^)]+)\)/);
+        if (prodMatch) item.prod_number = prodMatch[1];
+      }
+
+      if (item.prod_number) {
+        let pNum = String(item.prod_number)
+          .replace(/\/\s*[A-Z0-9]{0,5}\s*(?:CTNS?|BOXES?|PKGS?|SETS?|PALLETS?|CTN|PCS|PIECES)\s*$/gi, '')
+          .replace(/[()]/g, '').trim();
+        if (pNum.includes('/')) pNum = pNum.split('/').pop();
+        item.prod_number = pNum.trim();
+      }
+
+      if (item.description) {
+        item.description = item.description
+          .replace(/\([^)]+\)/g, '')
+          .replace(/HS\s*CODE:?\s*\d+(?:\.\s*\d+)?/gi, '')
+          .replace(/^\s*(?:[A-Z0-9\s]+)?\s*(?:\(\d+\))?\s*(?:CTNS?|BOXES?|PKGS?|SETS?|PALLETS?|CTN|PCS|PIECES)\s*(?:OF)?\s+/i, '')
+          .replace(/^OF\s+/i, '') // 🛠️ FIX: Membunuh awalan "OF" yang menggantung
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+      }
+
+      return item;
+    });
+  }
 };
 
 /**
