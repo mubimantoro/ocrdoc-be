@@ -130,12 +130,15 @@ const rulesRegistry = {
     }
   },
   // ==========================================
-  // RULES UNTUK INVOICE (380)
+  // RULES UNTUK INVOICE (380) - UNIVERSAL MODE
   // ==========================================
   '380': (data) => {
     const root = data.data || data;
-    const rootCurrency = root.currency_code;
 
+    // 1. Pewarisan Meta-Data Root (Master Currency)
+    const masterCurrency = root.currency_code || null;
+
+    // 2. Standarisasi Tipe Kemasan Global (Root Level)
     if (root.packaging_type) {
       root.packaging_type = standardizePackagingUnit(root.packaging_type);
     }
@@ -143,14 +146,43 @@ const rulesRegistry = {
     if (Array.isArray(root.invoice_list)) {
       root.invoice_list.forEach((inv) => {
         if (Array.isArray(inv.items)) {
+
+          // 🚀 THE UNIVERSAL INHERITANCE ENGINE
+          let dominantPackagingType = root.packaging_type || null;
+
+          if (!dominantPackagingType) {
+            // Jika header null, cari petunjuk kemasan dari baris item mana pun
+            const itemWithPack = inv.items.find((item) => item && item.packaging_type_item);
+            if (itemWithPack) {
+              dominantPackagingType = standardizePackagingUnit(itemWithPack.packaging_type_item);
+              // 🚨 FIX 1: Suntikkan kembali ke Root agar UI Header klien tidak null!
+              root.packaging_type = dominantPackagingType;
+            }
+          }
+
+          // 3. Iterasi & Standarisasi Level Item
           inv.items.forEach((item) => {
-            if (!item.currency || item.currency === '') {
-              item.currency = rootCurrency;
+            if (!item) return;
+
+            // A. Pewarisan Mata Uang (Currency Cascading)
+            if (!item.currency || String(item.currency).trim() === '') {
+              item.currency = masterCurrency;
             }
 
+            // B. Pewarisan Kemasan (Mengatasi "Context Loss" Multi-page)
             if (item.packaging_type_item) {
               item.packaging_type_item = standardizePackagingUnit(item.packaging_type_item);
+            } else if (dominantPackagingType) {
+              item.packaging_type_item = dominantPackagingType;
             }
+
+            // C. 🚨 FIX 2: Numeric Sanitization Guard Keseluruhan (Termasuk Amount)
+            ['quantity', 'unit_price', 'amount'].forEach((field) => {
+              if (typeof item[field] === 'string') {
+                const cleanNum = item[field].replace(/[^\d.-]/g, '');
+                item[field] = cleanNum !== '' ? Number(cleanNum) : null;
+              }
+            });
           });
         }
       });
