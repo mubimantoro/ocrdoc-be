@@ -68,17 +68,34 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 /**
  * Mendapatkan prompt untuk ekstraksi sekuensial (halaman lanjutan)
  */
-export const getSequentialExtractionPrompt = (basePrompt, contextSummary) => {
-  return `${basePrompt}
-${contextSummary}
-CRITICAL: Ini adalah HALAMAN LANJUTAN. Gunakan konteks di atas agar tidak menduplikasi data. FOKUS menjahit detail part number ke item yang relevan atau menambah baris baru jika berbeda.`;
+export const getSequentialExtractionPrompt = (basePrompt, contextSummary, docCode) => {
+  const isCooManual = docCode === '861';
+
+  // 1. Aturan Dasar (Berlaku untuk semua dokumen)
+  let sequentialInstruction = `
+CRITICAL: Ini adalah HALAMAN LANJUTAN. Gunakan konteks di atas untuk menyambung data yang terpotong antar halaman. 
+FOKUS: Menjahit detail yang terpisah ke item yang relevan atau menambah baris baru jika ada identitas baru.`;
+
+  // 2. Scoped Instruction (Agar tidak merusak schema lain)
+  if (isCooManual) {
+    sequentialInstruction += `
+CRITICAL DIRECTIVE FOR COO:
+- JANGAN PERNAH menghapus baris dengan asumsi itu adalah duplikat data sebelumnya.
+- Di COO, banyak barang memiliki deskripsi dan HS Code yang sama. Ekstrak SEMUA baris secara persis!
+- Jika ada teks/harga di awal halaman tanpa nomor urut, ekstrak sebagai objek baru dengan "item_number": null.`;
+  }
+
+  return `${basePrompt}\n${contextSummary}\n${sequentialInstruction}`;
 };
 
 /**
  * Prompt khusus untuk ekstraksi item-only (Parallel Mode).
  */
-export const getItemOnlyExtractionPrompt = (schemaDefinition) => {
+export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition) => {
   const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
+  const specificInstructions = DOCUMENT_SPECIFIC_INSTRUCTIONS[docCode] || '';
+
+  const cooParallelDirective = docCode === '861' ? '\nCRITICAL COO RULE: Jika baris teratas di halaman ini adalah potongan deskripsi/harga tanpa Nomor Urut (Item Number), EKSTRAK SEBAGAI OBJECT SENDIRI dengan "item_number": null. Dilarang mengabaikannya!' : '';
 
   return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT:
 Ekstrak HANYA baris-baris data dari tabel/list yang ada di halaman ini.
@@ -90,7 +107,9 @@ ATURAN KETAT:
 2. JANGAN sertakan header dokumen (nomor, tanggal, vendor, dll).
 3. JANGAN sertakan key yang nilainya null atau kosong.
 4. Jika halaman ini tidak mengandung baris tabel (misal: halaman cover/tanda tangan), return array kosong: []
-5. Setiap item WAJIB memiliki minimal satu field yang terisi.
+5. Setiap item WAJIB memiliki minimal satu field yang terisi.${cooParallelDirective}
+
+${specificInstructions}
 
 BLUEPRINT FIELDS PER ITEM:
 ${JSON.stringify(schemaDefinition.items || schemaDefinition.invoice_list?.items || [])}
