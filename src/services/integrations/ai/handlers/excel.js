@@ -15,7 +15,7 @@ export const processExcelExtraction = async (fileBuffer, sheetName, prompt, toke
   const anchorCsv = csvLines.slice(0, ANCHOR_LINES_COUNT).join('\n');
   const dataCsvLines = csvLines.slice(ANCHOR_LINES_COUNT);
 
-  const BATCH_SIZE = 15;
+  const BATCH_SIZE = 50;
   const batches = [];
 
   if (dataCsvLines.length === 0) {
