@@ -57,50 +57,75 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     if (isExcel) {
       console.log('[BOUNDARY WORKER] Menerima Excel. Memulai sanitasi Hidden Sheets...');
 
-      // 1. Baca buffer Excel asli menggunakan xlsx
+      // 1. Baca Excel asli (RAW)
       const rawExcelBuffer = await fs.readFile(absoluteFilePath);
       const workbook = xlsx.read(rawExcelBuffer, { type: 'buffer' });
-
-      // 2. Buat Workbook baru yang kosong (untuk menampung sheet yang bersih)
-      const cleanWorkbook = xlsx.utils.book_new();
-      let hasVisibleSheets = false;
-
-      // 3. Looping semua sheet, filter yang tersembunyi
-      workbook.SheetNames.forEach((sheetName, index) => {
-        // Cek metadata SheetJS. Hidden: 0 (Visible), 1 (Hidden), 2 (Very Hidden)
-        const sheetMeta = workbook.Workbook && workbook.Workbook.Sheets && workbook.Workbook.Sheets[index];
-        const isHidden = sheetMeta ? (sheetMeta.Hidden === 1 || sheetMeta.Hidden === 2) : false;
-
-        if (!isHidden) {
-          // Jika visible, masukkan ke workbook yang bersih
-          xlsx.utils.book_append_sheet(cleanWorkbook, workbook.Sheets[sheetName], sheetName);
-          hasVisibleSheets = true;
-          console.log(`[BOUNDARY WORKER] Sheet dipertahankan: "${sheetName}"`);
-        } else {
+    
+      // 2. Ambil metadata sheet (jika ada)
+      const sheetMetaList = workbook.Workbook?.Sheets || [];
+    
+      // Buat mapping name → meta
+      const sheetMetaMap = {};
+      sheetMetaList.forEach((meta, idx) => {
+        const name = workbook.SheetNames[idx];
+        if (name) sheetMetaMap[name] = meta;
+      });
+    
+      // 3. Filter hanya sheet yang visible
+      const visibleSheets = workbook.SheetNames.filter((sheetName) => {
+        const meta = sheetMetaMap[sheetName];
+        const isHidden = meta && (meta.Hidden === 1 || meta.Hidden === 2);
+    
+        if (isHidden) {
           console.log(`[BOUNDARY WORKER] Sheet dibuang (Hidden): "${sheetName}"`);
+        } else {
+          console.log(`[BOUNDARY WORKER] Sheet dipertahankan: "${sheetName}"`);
+        }
+    
+        return !isHidden;
+      });
+    
+      // Validasi: minimal 1 sheet harus visible
+      if (visibleSheets.length === 0) {
+        throw new Error('VALIDATION_ERROR: Semua sheet di Excel dalam kondisi hidden.');
+      }
+    
+      // 4. Hapus sheet hidden langsung dari workbook (IN-PLACE)
+      workbook.SheetNames.forEach((sheetName) => {
+        if (!visibleSheets.includes(sheetName)) {
+          delete workbook.Sheets[sheetName];
         }
       });
-
-      // Validasi Ekstrem: Klien usil nge-hide semua sheet
-      if (!hasVisibleSheets) {
-        throw new Error('VALIDATION_ERROR: File Excel ini kosong atau semua sheet disembunyikan (Hidden) oleh pengirim.');
-      }
-
-      // 4. Ubah kembali Workbook bersih menjadi Buffer
-      console.log('[BOUNDARY WORKER] ⚙️ Sanitasi selesai. Menginisiasi konversi Background Gotenberg...');
-      const cleanExcelBuffer = xlsx.write(cleanWorkbook, { type: 'buffer', bookType: 'xlsx' });
-
-      // 5. Lempar Buffer yang sudah bersih ke Gotenberg
+    
+      // 5. Update daftar sheet
+      workbook.SheetNames = visibleSheets;
+    
+      // 6. Update metadata workbook (sinkron)
+      workbook.Workbook = workbook.Workbook || {};
+      workbook.Workbook.Sheets = visibleSheets.map((name) => sheetMetaMap[name] || {});
+    
+      // (opsional tapi recommended untuk LibreOffice/Gotenberg)
+      workbook.Workbook.Views = [{ activeTab: 0 }];
+    
+      console.log('[BOUNDARY WORKER] Hidden sheet berhasil dihapus. Mengirim ke Gotenberg...');
+    
+      // 7. Convert ke buffer TANPA rebuild struktur
+      const cleanExcelBuffer = xlsx.write(workbook, {
+        type: 'buffer',
+        bookType: 'xlsx',
+        cellStyles: true // menjaga styling & layout
+      });
+    
+      // 8. Kirim ke Gotenberg
       const pdfBuffer = await convertExcelToPdf(cleanExcelBuffer, fileName);
-
-      // 6. Tentukan nama file baru (ganti ekstensi jadi .pdf)
+    
+      // 9. Simpan hasil PDF
       const parsedPath = path.parse(absoluteFilePath);
       const newPdfPath = path.join(parsedPath.dir, `${parsedPath.name}_converted.pdf`);
-
-      // 7. Simpan file PDF baru ke disk
+    
       await fs.writeFile(newPdfPath, pdfBuffer);
-
-      // 8. Ubah identitas Job agar seluruh pipeline di bawahnya mengira ini adalah PDF!
+    
+      // 10. Override pipeline jadi PDF
       absoluteFilePath = newPdfPath;
       mimeType = 'application/pdf';
       isExcel = false;
