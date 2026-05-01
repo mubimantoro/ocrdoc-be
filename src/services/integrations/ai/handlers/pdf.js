@@ -100,9 +100,7 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
-  if (pdfDoc.isEncrypted) {
-    return processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
-  }
+  if (pdfDoc.isEncrypted) return processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
 
   console.log(`\n[AI-SERVICE] [PARALLEL MODE] Memulai Ekstraksi Master-Slave untuk ${numPages} halaman...`);
 
@@ -113,22 +111,13 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     return Buffer.from(await singlePdf.save());
   };
 
-  // --- 1. SCHEMA BUILDING ---
   let masterSchema = null;
   let itemSchema = null;
   let phase1HeaderOnlySchema = null;
 
   if (isExcelToPdf && docCode === '217') {
-    itemSchema = {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          invoice_number: { type: Type.STRING },
-          items_csv: { type: Type.ARRAY, items: { type: Type.STRING } }
-        }
-      }
-    };
+    // 🚀 THE FIX: Bebaskan AI dari beban membuat JSON Object. Gunakan Array of String!
+    itemSchema = { type: Type.ARRAY, items: { type: Type.STRING } };
 
     phase1HeaderOnlySchema = {
       type: Type.OBJECT,
@@ -158,23 +147,17 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     if (masterSchema && masterSchema.properties) {
       phase1HeaderOnlySchema = JSON.parse(JSON.stringify(masterSchema));
       delete phase1HeaderOnlySchema.properties.items;
-      if (phase1HeaderOnlySchema.properties.pl_list?.items?.properties?.items) {
-        delete phase1HeaderOnlySchema.properties.pl_list.items.properties.items;
-      }
-      if (phase1HeaderOnlySchema.properties.invoice_list?.items?.properties?.items) {
-        delete phase1HeaderOnlySchema.properties.invoice_list.items.properties.items;
-      }
+      if (phase1HeaderOnlySchema.properties.pl_list?.items?.properties?.items) delete phase1HeaderOnlySchema.properties.pl_list.items.properties.items;
+      if (phase1HeaderOnlySchema.properties.invoice_list?.items?.properties?.items) delete phase1HeaderOnlySchema.properties.invoice_list.items.properties.items;
     }
   }
 
-  // --- 2. PHASE 1: Halaman 1 (HEADER ONLY) ---
   console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Mengekstrak Header...');
   const page1Buffer = await extractPageBuffer(0);
 
-  // 🛡️ ZERO-REGRESSION: Isolasi prompt khusus Excel 217 agar tidak menyentuh item di Phase 1
   let masterPrompt = prompt;
   if (isExcelToPdf && docCode === '217') {
-    masterPrompt = `${prompt}\n\nCRITICAL INSTRUCTION KHUSUS PHASE 1: JANGAN PERNAH MENGEKSTRAK BARIS BARANG (items / items_csv)! ABAIKAN BLUEPRINT ITEM. Ekstrak HANYA Header (invoice_number, invoice_date). Output WAJIB berupa objek JSON murni tanpa isi data barang.`;
+    masterPrompt = `${prompt}\n\nCRITICAL INSTRUCTION KHUSUS PHASE 1: JANGAN PERNAH MENGEKSTRAK BARIS BARANG (items / items_csv)! ABAIKAN BLUEPRINT ITEM. Ekstrak HANYA Header. Output WAJIB berupa objek JSON murni tanpa isi data barang.`;
   } else {
     masterPrompt = `${prompt}\n\nCRITICAL INSTRUCTION: Ekstrak HANYA informasi Header (seperti nomor dokumen, tanggal, dll). JANGAN ekstrak tabel baris barang.`;
   }
@@ -189,34 +172,23 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   tokenUsage.ocr += extractOcrTokens(headerMeta);
   tokenUsage.total += headerMeta.totalTokenCount || 0;
 
-  // 🛡️ THE HARVESTER PROTECTOR
-  // Jika Phase 1 terpotong & Harvester merespons berupa Array, kita rakit kembali jadi Object
   let masterJson = rawMasterJson;
-  if (Array.isArray(rawMasterJson)) {
-    console.warn('[AI-SERVICE] Harvester terpicu di Phase 1. Merakit ulang menjadi Master Object...');
-    masterJson = {
-      doc_code: docCode,
-      pl_list: [{ invoice_number: 'N/A', items_csv: rawMasterJson }]
-    };
-  }
+  if (Array.isArray(rawMasterJson)) masterJson = { doc_code: docCode, pl_list: [{ invoice_number: 'UNKNOWN' }] };
 
-  // Siapkan rumah data secara aman
   if (docCode === '217') {
-    if (!masterJson.pl_list || masterJson.pl_list.length === 0) masterJson.pl_list = [{ invoice_number: masterJson.doc_code || 'N/A' }];
-    if (!masterJson.pl_list[0].items_csv) masterJson.pl_list[0].items_csv = [];
-    if (!masterJson.pl_list[0].items) masterJson.pl_list[0].items = [];
+    if (!masterJson.pl_list || masterJson.pl_list.length === 0) masterJson.pl_list = [{ invoice_number: masterJson.doc_code || 'UNKNOWN' }];
+    masterJson.pl_list.forEach((pl) => { pl.items = []; }); // Pastikan rumahnya bersih
   } else {
     const targetListKey = masterJson.invoice_list ? 'invoice_list' : 'pl_list';
     if (!masterJson[targetListKey] || masterJson[targetListKey].length === 0) masterJson[targetListKey] = [{}];
     if (!masterJson[targetListKey][0].items) masterJson[targetListKey][0].items = [];
   }
 
-  // --- 3. PHASE 2: Batched Parallel Worker (Hanya Items, SEMUA HALAMAN 0 sampai N) ---
-  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan worker paralel untuk SELURUH halaman...');
+  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan worker paralel...');
   const itemOnlyPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema, isExcelToPdf);
   const parallelResults = [];
   const CONCURRENCY_LIMIT = 5;
-  const pagesToProcess = Array.from({ length: numPages }, (_, i) => i); // Mulai dari 0
+  const pagesToProcess = Array.from({ length: numPages }, (_, i) => i);
 
   for (let i = 0; i < pagesToProcess.length; i += CONCURRENCY_LIMIT) {
     const batchPages = pagesToProcess.slice(i, i + CONCURRENCY_LIMIT);
@@ -233,16 +205,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
       tokenUsage.ocr += extractOcrTokens(pageMeta);
       tokenUsage.total += pageMeta.totalTokenCount || 0;
 
-      // Tarik array murni (Aman dari objek campuran)
       let items = [];
-      if (Array.isArray(rawData)) {
-        // 🚀 THE HARVESTER SAFEGUARD: Jika Harvester mengembalikan Array String mentah, kita paksakan masuk ke objek CONTINUATION
-        if (rawData.length > 0 && typeof rawData[0] === 'string') {
-          items = [{ invoice_number: 'CONTINUATION_PAGE', items_csv: rawData }];
-        } else {
-          items = rawData;
-        }
-      } else if (rawData && typeof rawData === 'object') {
+      if (Array.isArray(rawData)) items = rawData;
+      else if (rawData && typeof rawData === 'object') {
         const potentialItems = rawData.items_csv || rawData.items || [];
         if (Array.isArray(potentialItems)) items = potentialItems;
       }
@@ -257,37 +222,53 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
 
   parallelResults.sort((a, b) => a.pageIndex - b.pageIndex);
 
-  // --- 4. PHASE 3: DYNAMIC INVOICE MERGING ---
-  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 3: Menjahit data berdasarkan Nomor Invoice...');
+  // --- 4. PHASE 3: NODE.JS ROW-LEVEL STITCHER ---
+  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 3: Penjahitan Row-Level Mapping...');
 
-  let lastSeenInvoiceNo = 'UNKNOWN'; // 🚀 Tracker Context Bleeding
+  let lastSeenInvoiceNo = masterJson.pl_list[0].invoice_number || 'UNKNOWN';
 
   for (let i = 0; i < parallelResults.length; i++) {
     const { items: pageItems } = parallelResults[i];
     if (!pageItems || pageItems.length === 0) continue;
 
     if (docCode === '217' && isExcelToPdf) {
-      pageItems.forEach((group) => {
-        if (!group.items_csv || group.items_csv.length === 0) return;
+      // Skema 13 Kolom Klien (Index 0 dibuang karena itu invoice_number)
+      const keys = ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit'];
 
-        let currentInvoiceNo = group.invoice_number || 'UNKNOWN';
+      pageItems.forEach((line) => {
+        if (typeof line !== 'string') return;
+        const parts = line.split('|');
+        if (parts.length < 2) return; // Skip baris error
 
-        // 🚀 THE STITCHER: Jahit barang dari halaman lanjutan ke invoice terakhir
-        if (currentInvoiceNo === 'CONTINUATION_PAGE' || currentInvoiceNo === 'UNKNOWN') {
+        // 🚀 ROW-LEVEL STITCHING: Baca invoice dari KOLOM PERTAMA pada String!
+        let currentInvoiceNo = parts[0] ? parts[0].trim() : '';
+
+        if (!currentInvoiceNo || currentInvoiceNo === 'CONTINUATION_PAGE' || currentInvoiceNo === 'UNKNOWN') {
           currentInvoiceNo = lastSeenInvoiceNo;
         } else {
-          lastSeenInvoiceNo = currentInvoiceNo; // Update memori invoice terbaru
+          lastSeenInvoiceNo = currentInvoiceNo; // Update Tracker
         }
 
         let targetInvoice = masterJson.pl_list.find((pl) => pl.invoice_number === currentInvoiceNo);
-
         if (!targetInvoice) {
-          targetInvoice = { invoice_number: currentInvoiceNo, items_csv: [] };
+          targetInvoice = { invoice_number: currentInvoiceNo, items: [] };
           masterJson.pl_list.push(targetInvoice);
         }
+        if (!targetInvoice.items) targetInvoice.items = [];
 
-        if (!targetInvoice.items_csv) targetInvoice.items_csv = [];
-        targetInvoice.items_csv.push(...group.items_csv);
+        // 🚀 TRANSLASI STR KE OBJECT SECARA AMAN
+        const obj = {};
+        keys.forEach((k, idx) => {
+          let val = parts[idx + 1] ? parts[idx + 1].trim() : null; // idx+1 untuk melewati invoice_number
+          if (val === '') val = null;
+          else if (['quantity', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'unit_price', 'amount'].includes(k) && val) {
+            const cleanedStr = val.toString().replace(/[^\d.-]/g, '');
+            val = cleanedStr !== '' ? Number(cleanedStr) : null;
+          }
+          obj[k] = val;
+        });
+
+        targetInvoice.items.push(obj);
       });
     } else {
       const targetListKey = masterJson.invoice_list ? 'invoice_list' : 'pl_list';
@@ -295,18 +276,17 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     }
   }
 
+  // Bersihkan invoice kosong bawaan Phase 1
   if (docCode === '217' && isExcelToPdf) {
-    masterJson.pl_list = masterJson.pl_list.filter((pl) => pl.items_csv && pl.items_csv.length > 0);
-  }
-
-  if (docCode === '001' || (docCode === '217' && isExcelToPdf)) {
-    parseItemsCsv(masterJson, docCode);
+    masterJson.pl_list = masterJson.pl_list.filter((pl) => pl.items && pl.items.length > 0);
+  } else if (docCode === '001') {
+    parseItemsCsv(masterJson, docCode); // Helper lama hanya untuk 001
   }
 
   await debugLog(docCode, 'parallel_merged_output', masterJson);
 
   const finalItemsCount = docCode === '217' ? masterJson.pl_list?.reduce((acc, pl) => acc + (pl.items?.length || 0), 0) : (masterJson.invoice_list?.[0]?.items?.length || masterJson.pl_list?.[0]?.items?.length);
-  console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai. Total item berhasil dirakit & digroup: ${finalItemsCount || 0}`);
+  console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai. Total item dirakit & digroup: ${finalItemsCount || 0}`);
 
   return masterJson;
 };

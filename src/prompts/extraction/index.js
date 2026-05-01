@@ -119,22 +119,22 @@ export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelTo
 
 
   if (isExcelToPdf && docCode === '217') {
-    return `Kamu adalah AI Extractor Tabel. TUGASMU: Ekstrak baris data tabel dan KELOMPOKKAN berdasarkan "Billing Document" atau "Invoice Number" yang tertera di dekat tabel.
+    return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT: Ekstrak HANYA baris data tabel.
 
 ATURAN KETAT:
-1. OUTPUT WAJIB ARRAY OF OBJECTS. Contoh Format:
-[
-  {
-    "invoice_number": "395536359",
-    "items_csv": ["1|Laptop Lenovo|10|PCS|||1.5|2.0|||0||"]
-  }
-]
-2. "items_csv" WAJIB berupa Array of Strings dengan format urut 13 kolom: number | description | quantity | quantity_unit | origin | brand | net_weight | gross_weight | amount | unit_price | measurement | packaging_qty | packaging_unit
-3. Pisahkan kolom di dalam string dengan karakter pipe (|). Jika data tidak ada/kosong, WAJIB biarkan kosong di antara pipe (contoh: |||). Pastikan setiap string memiliki tepat 12 buah karakter pipe (|).
-4. ATURAN GROUPING INVOICE (SANGAT KRITIS): JANGAN PERNAH menebak atau mengingat nomor Invoice dari halaman sebelumnya! Jika di halaman/tabel ini TIDAK TERCETAK nomor Invoice (Billing Document), kamu WAJIB menggunakan string "CONTINUATION_PAGE" sebagai "invoice_number".
-5. DILARANG menggunakan markdown (seperti \`\`\`json). Langsung buka dengan bracket "[" dan tutup dengan "]".
+1. OUTPUT WAJIB ARRAY OF STRINGS MURNI (Flat Array).
+2. DILARANG MEMBUAT OBJECT JSON! Langsung buka dengan bracket "[" dan isi dengan string.
+3. Format String WAJIB 14 kolom urut: invoice_number | number | description | quantity | quantity_unit | origin | brand | net_weight | gross_weight | amount | unit_price | measurement | packaging_qty | packaging_unit
+4. Kolom pertama (invoice_number) WAJIB diisi dengan "Billing Document" yang tercetak sebaris dengan barang tersebut. Jika tidak ada, isi "CONTINUATION_PAGE".
+5. Pisahkan dengan karakter pipe (|). Jika data kosong, biarkan kosong di antara pipe. Pastikan setiap baris string memiliki tepat 13 buah karakter pipe (|).
 
-CRITICAL: Output HANYA JSON Array of Objects yang tertutup sempurna!`;
+Contoh Output:
+[
+  "395536361|10|BACKHAUS TOWEL CLAMP 135MM|10|PCE|||0.31|0.32|180|18|||",
+  "395536361|20|HALSTED-MOSQUITO FORCEPS|20|PCE|||0.41|0.42|200|10|||"
+]
+
+CRITICAL: Output HANYA JSON Array of Strings yang tertutup sempurna!`;
   }
 
   let lookupCode = docCode;
