@@ -2,7 +2,6 @@
 /* eslint-disable camelcase */
 import dotenv from 'dotenv';
 import path from 'path';
-import * as xlsx from 'xlsx';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { Queue, Worker } from 'bullmq';
@@ -50,9 +49,10 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'processing', progress: 5 });
 
     let isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+    const wasOriginallyExcel = isExcel;
 
     // ==============================================================
-    // 🪄 ILUSI GOTENBERG & SANITASI EXCEL
+    //  GOTENBERG
     // ==============================================================
     if (isExcel) {
       console.log('[BOUNDARY WORKER] Menerima Excel. Memulai sanitasi Hidden Sheets...');
@@ -60,12 +60,12 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       const rawExcelBuffer = await fs.readFile(absoluteFilePath);
 
       const pdfBuffer = await convertExcelToPdf(rawExcelBuffer, fileName);
-    
+
       const parsedPath = path.parse(absoluteFilePath);
       const newPdfPath = path.join(parsedPath.dir, `${parsedPath.name}_converted.pdf`);
-    
+
       await fs.writeFile(newPdfPath, pdfBuffer);
-    
+
       absoluteFilePath = newPdfPath;
       mimeType = 'application/pdf';
       isExcel = false;
@@ -84,7 +84,30 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     let segmentationResult;
     let fileBuffer;
 
-    if (isPdf) {
+    if (wasOriginallyExcel) {
+      console.log('[BOUNDARY WORKER] Mode: Excel');
+
+      if (!manualDocType) {
+        throw new Error('VALIDATION_ERROR: Doc Type WAJIB dikirim untuk memproses dokumen Excel.');
+      }
+
+      // Kita hitung total halamannya menggunakan utilitas yang sudah Anda punya
+      const loadedPdf = await loadMasterPdf(absoluteFilePath);
+      const totalPdfPages = loadedPdf.totalPages;
+
+      segmentationResult = {
+        documents: [{
+          doc_code: manualDocType,
+          start_page: 1,
+          end_page: totalPdfPages,
+          document_number: null,
+          vendor: null
+        }],
+        usage: { inputTotal: 0, output: 0, ocr: 0, inputText: 0 },
+        modelUsed: 'system-bypass'
+      };
+
+    } else if (isPdf) {
       console.log('[BOUNDARY WORKER] Mode: PDF');
       segmentationResult = await processPdfBoundary(absoluteFilePath, mimeType, manualDocType);
     } else if (isImage) {
@@ -174,7 +197,8 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
           splitFilePath,
           docCode: doc.doc_code, // 🚨 Dokumen ini sekarang akan di-ekstrak layaknya PDF.
           mimeType,
-          sheetName: doc.sheetName ?? null
+          sheetName: doc.sheetName ?? null,
+          isExcelToPdf: wasOriginallyExcel
         }, {
           attempts: 3,
           backoff: { type: 'exponential', delay: 5000 },
