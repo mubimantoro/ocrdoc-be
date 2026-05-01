@@ -1,65 +1,65 @@
+/* eslint-disable no-unused-vars */
 /**
- * Utility untuk memperbaiki JSON yang terpotong (Truncated) secara otomatis
+ * Utility untuk memperbaiki JSON yang terpotong (Truncated) menggunakan algoritma Stack LIFO.
  */
 const repairTruncatedJson = (jsonString) => {
   let repaired = jsonString.trim();
 
-  /**
-   * 🛡️ ADVANCED CLEANUP
-   * Jika JSON terpotong di tengah jalan, biasanya berakhir dengan:
-   * - Tanda koma menggantung: ... "key": "val",
-   * - Tanda kutip menggantung: ... "key": "v
-   * - Nama key menggantung: ... "ke
-   * Kita hapus karakter-karakter ini sampai menemukan batas data yang valid.
-   */
-  const isSafeEnding = (str) => /[}\]]|true|false|null|\d$/.test(str);
+  // 1. Hapus trailing comma yang menggantung
+  repaired = repaired.replace(/,\s*$/, '');
 
-  // Bersihkan karakter di ujung secara mundur sampai menemukan "Safe Ending"
-  // Limit 100 iterasi untuk mencegah infinite loop (walaupun hampir tidak mungkin)
-  let safetyCounter = 0;
-  while (repaired.length > 0 && !isSafeEnding(repaired) && safetyCounter < 100) {
-    repaired = repaired.slice(0, -1).trim();
-    safetyCounter++;
+  // 2. Deteksi kutipan ganjil
+  let quoteCount = 0;
+  for (let i = 0; i < repaired.length; i++) {
+    if (repaired[i] === '"' && (i === 0 || repaired[i - 1] !== '\\')) {
+      quoteCount++;
+    }
   }
 
-  // Jika setelah dibersihkan berakhir dengan koma, hapus komanya agar valid
-  if (repaired.endsWith(',')) {
-    repaired = repaired.slice(0, -1).trim();
+  // 3. Tutup string
+  if (quoteCount % 2 !== 0) repaired += '"';
+  repaired = repaired.replace(/,\s*$/, '');
+
+  // 4. LIFO Stack Array untuk menghitung kurung yang terbuka
+  const stack = [];
+  let inString = false;
+
+  for (let i = 0; i < repaired.length; i++) {
+    if (repaired[i] === '"' && (i === 0 || repaired[i - 1] !== '\\')) {
+      inString = !inString;
+    }
+    if (!inString) {
+      if (repaired[i] === '{') stack.push('}');
+      else if (repaired[i] === '[') stack.push(']');
+      else if (repaired[i] === '}' || repaired[i] === ']') stack.pop();
+    }
   }
 
-  // 2. Hitung jumlah kurung yang terbuka dan tertutup
-  const openBraces = (repaired.match(/\{/g) || []).length;
-  const closeBraces = (repaired.match(/\}/g) || []).length;
-  const openBrackets = (repaired.match(/\[/g) || []).length;
-  const closeBrackets = (repaired.match(/\]/g) || []).length;
-
-  // 3. Tambahkan penutup yang kurang secara sekuensial
-  let diffBraces = openBraces - closeBraces;
-  let diffBrackets = openBrackets - closeBrackets;
-
-  // Tutup array dulu (jika ada) baru tutup object
-  while (diffBrackets > 0) {
-    repaired += ']';
-    diffBrackets--;
-  }
-  while (diffBraces > 0) {
-    repaired += '}';
-    diffBraces--;
+  // 5. Keluarkan isi stack (Last-In-First-Out) untuk menutup JSON dengan urutan yang BENAR
+  while (stack.length > 0) {
+    repaired += stack.pop();
   }
 
   return repaired;
 };
 
-/**
- * Utility untuk membersihkan respons AI dari format Markdown Code Block
- * dan mengonversinya menjadi Object JavaScript yang valid.
- * * @param {string} rawText - Teks mentah dari respons AI
- * @returns {object} - Object JSON hasil parsing
- */
-export const cleanAIJson = (rawText) => {
-  if (!rawText) {
-    throw new Error('Respons AI kosong (null/undefined).');
+const harvestArrayStrings = (rawText) => {
+  console.warn('[AI SANITIZER] Memicu "The Harvester" untuk mengekstrak array secara kasar...');
+  const results = [];
+  const regex = /"([^"\\]*(?:\\.[^"\\]*)*\|[^"\\]*(?:\\.[^"\\]*)*)"/g;
+  let match;
+  while ((match = regex.exec(rawText)) !== null) {
+    results.push(match[1]);
   }
+  if (results.length > 0) {
+    console.log(`[AI SANITIZER] The Harvester berhasil memanen ${results.length} baris data!`);
+    return results;
+  }
+  throw new Error('Harvester tidak menemukan pola Array of Strings yang valid.');
+};
+
+export const cleanAIJson = (rawText) => {
+  if (!rawText) throw new Error('Respons AI kosong (null/undefined).');
 
   const cleanedText = rawText
     .replace(/```json/gi, '')
@@ -69,19 +69,21 @@ export const cleanAIJson = (rawText) => {
   try {
     return JSON.parse(cleanedText);
   } catch (error) {
-    // 🛡️ COBA PERBAIKI JIKA TERPOTONG
     try {
-      console.warn('[AI SANITIZER] Mendeteksi JSON terpotong, mencoba melakukan perbaikan...');
+      console.warn('[AI SANITIZER] Mendeteksi JSON terpotong, mencoba melakukan perbaikan cerdas (LIFO)...');
       const repairedText = repairTruncatedJson(cleanedText);
       return JSON.parse(repairedText);
     } catch (repairError) {
-      console.error('\n[AI SANITIZER ERROR] Gagal melakukan parsing JSON bahkan setelah perbaikan:');
-      console.error('Error Message:', error.message, repairError.message);
-      console.error('--- RAW TEXT BEGIN ---');
-      console.error(rawText);
-      console.error('--- RAW TEXT END ---\n');
-
-      throw new Error('Gagal mengekstrak data JSON dari respons AI. Format tidak valid setelah upaya perbaikan.');
+      try {
+        return harvestArrayStrings(cleanedText);
+      } catch (harvestError) {
+        console.error('\n[AI SANITIZER ERROR] Gagal melakukan parsing JSON bahkan setelah perbaikan:');
+        console.error('Error Message:', repairError.message);
+        console.error('--- RAW TEXT BEGIN ---');
+        console.error(rawText);
+        console.error('--- RAW TEXT END ---\n');
+        throw new Error('Gagal mengekstrak data JSON dari respons AI. Format tidak valid setelah upaya perbaikan.');
+      }
     }
   }
 };

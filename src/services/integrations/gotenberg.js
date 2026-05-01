@@ -29,11 +29,11 @@ export const convertExcelToPdf = async (excelBuffer, originalFileName) => {
     // Fallback nama file ke document.xlsx jika tidak disediakan
     formData.append('files', excelBlob, originalFileName || 'document.xlsx');
 
-    // KUNCI VISUAL: Render sebagai Landscape (karena tabel Packing List/Invoice seringkali lebar)
+    // KUNCI VISUAL: Render sebagai Landscape
     formData.append('landscape', 'true');
 
-    // (Opsional) Jika ingin tabel di-fit ke 1 lebar halaman agar tidak terpotong
-    // formData.append('scale', '0.9');
+    formData.append('paperWidth', '24');
+    formData.append('paperHeight', '4.0');
 
     const response = await fetch(GOTENBERG_URL, {
       method: 'POST',

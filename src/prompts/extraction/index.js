@@ -1,5 +1,6 @@
 import { instructions as ciplInstructions } from './rules/001.js';
 import { instructions as plInstructions } from './rules/217.js';
+import { instructions as plExcelInstructions } from './rules/217_excel.js';
 import { instructions as invInstructions } from './rules/380.js';
 import { instructions as lsInstructions } from './rules/958.js';
 import { instructions as skemInstructions } from './rules/846.js';
@@ -12,6 +13,7 @@ import { instructions as blInstructions } from './rules/705.js';
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '001': ciplInstructions,
   '217': plInstructions,
+  '217_EXCEL': plExcelInstructions,
   '380': invInstructions,
   '705': blInstructions,
   '740': awbInstructions,
@@ -21,8 +23,29 @@ const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
   '958': lsInstructions,
 };
 
-export const getExtractionPrompt = (docCode, schemaDefinition) => {
-  const specificInstructions = DOCUMENT_SPECIFIC_INSTRUCTIONS[docCode] || '';
+export const getExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false) => {
+
+  // ZERO-REGRESSION ROUTING
+  let lookupCode = docCode;
+  let activeSchemaObj = schemaDefinition;
+
+  if (isExcelToPdf && DOCUMENT_SPECIFIC_INSTRUCTIONS[`${docCode}_EXCEL`]) {
+    lookupCode = `${docCode}_EXCEL`;
+
+    if (docCode === '217') {
+      // 🚀 THE TOKEN-SAVER BLUEPRINT HACK (KHUSUS EXCEL 217)
+      // Mengubah items menjadi items_csv (Array of Strings) agar selaras dengan kuncian API.
+      activeSchemaObj = {
+        'pl_list': {
+          'fields': ['invoice_number', 'invoice_date'],
+          'items_csv': [
+            'number | description | quantity | quantity_unit | net_weight | gross_weight | measurement'
+          ]
+        }
+      };
+    }
+  }
+  const specificInstructions = DOCUMENT_SPECIFIC_INSTRUCTIONS[lookupCode] || '';
 
   const base = `Kamu adalah 'Data Extraction AI' tingkat lanjut yang ahli memproses dokumen operasional logistik, bea cukai, dan rantai pasok internasional.
 Tugasmu adalah menganalisis dokumen PDF terlampir dan mengekstrak HANYA data yang eksplisit tertulis menjadi JSON aktual.
@@ -30,7 +53,7 @@ Tugasmu adalah menganalisis dokumen PDF terlampir dan mengekstrak HANYA data yan
 PENTING: JSON di bawah ini BUKAN format output akhir, melainkan BLUEPRINT (Kerangka Meta-Schema) yang mengatur data apa saja yang harus diekstrak.
 
 BLUEPRINT SCHEMA:
-${JSON.stringify(schemaDefinition)}
+${JSON.stringify(activeSchemaObj)}
 
 ATURAN INTERPRETASI BLUEPRINT (CARA MERAKIT OUTPUT JSON):
 1. ATURAN "fields" (HEADER): Ubah array "fields" menjadi root-level keys dengan nilai tunggal.
@@ -91,10 +114,37 @@ CRITICAL DIRECTIVE FOR COO:
 /**
  * Prompt khusus untuk ekstraksi item-only (Parallel Mode).
  */
-export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition) => {
+export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false) => {
   const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
-  const specificInstructions = DOCUMENT_SPECIFIC_INSTRUCTIONS[docCode] || '';
 
+
+  if (isExcelToPdf && docCode === '217') {
+    return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT: Ekstrak HANYA baris data tabel.
+
+ATURAN KETAT:
+1. OUTPUT WAJIB ARRAY OF STRINGS MURNI (Flat Array).
+2. DILARANG MEMBUAT OBJECT JSON! Langsung buka dengan bracket "[" dan isi dengan string.
+3. Format String WAJIB 14 kolom urut: invoice_number | number | description | quantity | quantity_unit | origin | brand | net_weight | gross_weight | amount | unit_price | measurement | packaging_qty | packaging_unit
+4. Kolom pertama (invoice_number) WAJIB diisi dengan "Billing Document" yang tercetak sebaris dengan barang tersebut. Jika tidak ada, isi "CONTINUATION_PAGE".
+5. Pisahkan dengan karakter pipe (|). Jika data kosong, biarkan kosong di antara pipe. Pastikan setiap baris string memiliki tepat 13 buah karakter pipe (|).
+
+Contoh Output:
+[
+  "395536361|10|BACKHAUS TOWEL CLAMP 135MM|10|PCE|||0.31|0.32|180|18|||",
+  "395536361|20|HALSTED-MOSQUITO FORCEPS|20|PCE|||0.41|0.42|200|10|||"
+]
+
+CRITICAL: Output HANYA JSON Array of Strings yang tertutup sempurna!`;
+  }
+
+  let lookupCode = docCode;
+  const itemBlueprint = schemaDefinition.items || schemaDefinition.invoice_list?.[0]?.items || schemaDefinition.pl_list?.[0]?.items || [];
+
+  if (isExcelToPdf && DOCUMENT_SPECIFIC_INSTRUCTIONS[`${docCode}_EXCEL`]) {
+    lookupCode = `${docCode}_EXCEL`;
+  }
+
+  const specificInstructions = DOCUMENT_SPECIFIC_INSTRUCTIONS[lookupCode] || '';
   const cooParallelDirective = docCode === '861' ? '\nCRITICAL COO RULE: Jika baris teratas di halaman ini adalah potongan deskripsi/harga tanpa Nomor Urut (Item Number), EKSTRAK SEBAGAI OBJECT SENDIRI dengan "item_number": null. Dilarang mengabaikannya!' : '';
 
   return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT:
@@ -104,15 +154,15 @@ TARGET KEY: "${itemKey}"
 
 ATURAN KETAT:
 1. OUTPUT HANYA array JSON. Contoh: [{...}, {...}]
-2. JANGAN sertakan header dokumen (nomor, tanggal, vendor, dll).
-3. JANGAN sertakan key yang nilainya null atau kosong.
+2. JANGAN bungkus array tersebut di dalam key apapun (jangan gunakan "pl_list" atau "items"). Langsung buka dengan bracket "[" dan tutup dengan "]".
+3. JANGAN sertakan header dokumen (nomor, tanggal, vendor, dll).
 4. Jika halaman ini tidak mengandung baris tabel (misal: halaman cover/tanda tangan), return array kosong: []
 5. Setiap item WAJIB memiliki minimal satu field yang terisi.${cooParallelDirective}
 
 ${specificInstructions}
 
 BLUEPRINT FIELDS PER ITEM:
-${JSON.stringify(schemaDefinition.items || schemaDefinition.invoice_list?.items || [])}
+${JSON.stringify(itemBlueprint)}
 
 CRITICAL: Output harus berupa JSON array yang valid dan tertutup sempurna.`;
 };

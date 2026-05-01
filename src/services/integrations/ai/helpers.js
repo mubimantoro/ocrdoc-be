@@ -1,7 +1,29 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { Type } from '@google/genai';
 import { ai, MODELS, safetySettings } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
+
+export const jsonToGeminiSchema = (blueprint) => {
+  if (Array.isArray(blueprint)) {
+    return {
+      type: Type.ARRAY,
+      items: blueprint.length > 0 ? jsonToGeminiSchema(blueprint[0]) : { type: Type.STRING }
+    };
+  } else if (blueprint !== null && typeof blueprint === 'object') {
+    const properties = {};
+    for (const key in blueprint) {
+      properties[key] = jsonToGeminiSchema(blueprint[key]);
+    }
+    return { type: Type.OBJECT, properties };
+  } else if (typeof blueprint === 'number') {
+    return { type: Type.NUMBER };
+  } else if (typeof blueprint === 'boolean') {
+    return { type: Type.BOOLEAN };
+  } else {
+    return { type: Type.STRING };
+  }
+};
 
 /**
  * DEBUGGER KHUSUS CIPL (001)
@@ -62,9 +84,6 @@ export const findTabularArray = (data) => {
   return null;
 };
 
-/**
- * ENTERPRISE DEEP MERGER
- */
 export const mergeArraysDeep = (master, batch) => {
   if (!master || typeof master !== 'object' || !batch || typeof batch !== 'object') return;
 
@@ -74,25 +93,23 @@ export const mergeArraysDeep = (master, batch) => {
     if (Array.isArray(batchVal)) {
       if (!master[key]) master[key] = [];
 
-      // Khusus CIPL/PL: Jika ini adalah list invoice/PL, kita coba merge rinciannya
       if ((key === 'invoice_list' || key === 'pl_list') && master[key].length > 0 && batchVal.length > 0) {
         const masterEntry = master[key][0];
         const batchEntry = batchVal[0];
 
-        // Merge Array items (jika format lama)
         if (batchEntry.items && Array.isArray(batchEntry.items)) {
           if (!masterEntry.items) masterEntry.items = [];
           masterEntry.items.push(...batchEntry.items);
         }
 
-        // Merge String items_csv (Strategi Baru)
-        if (batchEntry['items_csv'] && typeof batchEntry['items_csv'] === 'string') {
-          if (!masterEntry['items_csv']) {
-            masterEntry['items_csv'] = batchEntry['items_csv'];
-          } else {
-            // Gabungkan dengan newline agar tidak menempel
-            masterEntry['items_csv'] = `${masterEntry['items_csv'].trim()}\n${batchEntry['items_csv'].trim()}`;
-          }
+        // 🚀 ADAPTASI ARRAY OF STRINGS
+        if (batchEntry['items_csv']) {
+          if (!masterEntry['items_csv']) masterEntry['items_csv'] = [];
+
+          const masterCsv = Array.isArray(masterEntry['items_csv']) ? masterEntry['items_csv'] : [masterEntry['items_csv']];
+          const batchCsv = Array.isArray(batchEntry['items_csv']) ? batchEntry['items_csv'] : [batchEntry['items_csv']];
+
+          masterEntry['items_csv'] = [...masterCsv, ...batchCsv];
         }
       } else {
         master[key].push(...batchVal);
@@ -101,34 +118,37 @@ export const mergeArraysDeep = (master, batch) => {
       if (!master[key] || typeof master[key] !== 'object') master[key] = {};
       mergeArraysDeep(master[key], batchVal);
     } else if (batchVal !== null && batchVal !== '') {
-      // Jika field adalah items_csv di tingkat object (bukan di dalam array), merge juga
-      if (key === 'items_csv' && typeof batchVal === 'string' && master[key]) {
-        master[key] = `${master[key].trim()}\n${batchVal.trim()}`;
-      } else if (!master[key] || master[key] === '' || master[key] === null) {
+      if (!master[key] || master[key] === '' || master[key] === null) {
         master[key] = batchVal;
       }
     }
   });
 };
-
 /**
  * THE ENTERPRISE SELF-HEALING ENGINE (Exponential Backoff + Circuit Breaker)
  */
-export const callGeminiWithRetry = async (geminiContents, maxRetries = 3) => {
+export const callGeminiWithRetry = async (geminiContents, maxRetries = 3, forceSchema = null) => {
   let attempt = 0;
 
   while (attempt < maxRetries) {
     try {
       attempt++;
+      const config = {
+        responseMimeType: 'application/json',
+        temperature: 0.0,
+        maxOutputTokens: 20480,
+        safetySettings
+      };
+
+      // 🚀 THE NUCLEAR OPTION: Mengunci API Schema
+      if (forceSchema) {
+        config.responseSchema = forceSchema;
+      }
+
       const response = await ai.models.generateContent({
         model: MODELS.FLAGSHIP,
         contents: geminiContents,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.0,
-          maxOutputTokens: 20480,
-          safetySettings
-        }
+        config
       });
 
       const candidate = response.candidates?.[0];
@@ -196,8 +216,14 @@ export const parseItemsCsv = (data, docCode) => {
   const processList = (listArray, keys) => {
     if (!Array.isArray(listArray)) return;
     listArray.forEach((entry) => {
-      if (entry['items_csv'] && typeof entry['items_csv'] === 'string') {
-        const lines = entry['items_csv'].split('\n').filter((l) => l.trim() !== '');
+      if (entry['items_csv']) {
+        let lines = [];
+        if (Array.isArray(entry['items_csv'])) {
+          lines = entry['items_csv'].filter((l) => l && l.trim() !== '');
+        } else if (typeof entry['items_csv'] === 'string') {
+          lines = entry['items_csv'].split('\n').filter((l) => l.trim() !== '');
+        }
+
         entry.items = lines.map((line) => {
           const parts = line.split('|');
           const obj = {};
@@ -205,7 +231,6 @@ export const parseItemsCsv = (data, docCode) => {
             let val = parts[i] ? parts[i].trim() : null;
             if (val === '') val = null;
             else if (['quantity', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'unit_price', 'amount'].includes(k) && val) {
-              // Hapus semua karakter selain angka, titik, dan minus
               const cleanedStr = val.toString().replace(/[^\d.-]/g, '');
               val = cleanedStr !== '' ? Number(cleanedStr) : null;
             }
@@ -222,6 +247,7 @@ export const parseItemsCsv = (data, docCode) => {
     processList(data['invoice_list'], ['number', 'prod_number', 'description', 'quantity', 'hs_code', 'uom', 'origin', 'origin_code', 'vendor_name', 'vendor_number', 'unit_price', 'amount', 'currency', 'packaging_type_item']);
     processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
   } else if (docCode === '217') {
+    // 🚀 DIKEMBALIKAN KE 13 KOLOM ABSOLUT SESUAI SCHEMA KLIEN
     processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
   }
 };

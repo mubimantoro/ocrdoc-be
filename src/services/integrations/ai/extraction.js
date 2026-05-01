@@ -5,7 +5,7 @@ import { getExtractionPrompt } from '../../../prompts/extraction/index.js';
 import { enforceSchemaStrictness } from '../../../utils/schema-enforcer.js';
 import { applyBusinessRules } from '../../../utils/business-rules.js';
 import { MODELS } from '../../../config/gemini.js';
-import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, parseItemsCsv, debugLog } from './helpers.js';
+import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, debugLog } from './helpers.js';
 import { processExcelExtraction } from './handlers/excel.js';
 import { PDFDocument } from 'pdf-lib';
 import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtraction } from './handlers/pdf.js';
@@ -17,14 +17,10 @@ const __dirname = path.dirname(__filename);
  * FASE 2 - Ekstraksi Data Spesifik (Smart Data Extraction)
  * Arsitektur Master: Omni-Channel Map Reduce (PDF & Excel) + Self-Healing
  */
-export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName = null) => {
+export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName = null, isExcelToPdf = false) => {
   const tokenUsage = { inputTotal: 0, inputText: 0, ocr: 0, output: 0, total: 0 };
 
-  // ==============================================================
-  // 🚀 MULAI EKSTRAKSI
-  // ==============================================================
   let jsonSchema;
-
   try {
     const schemaPath = path.join(__dirname, '../../../schemas', `${docCode}.json`);
     const schemaFile = await fs.readFile(schemaPath, 'utf-8');
@@ -33,7 +29,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     throw new Error(`Gagal memuat skema JSON untuk dokumen ${docCode}: ${err.message}`);
   }
 
-  const prompt = getExtractionPrompt(docCode, jsonSchema);
+  const prompt = getExtractionPrompt(docCode, jsonSchema, isExcelToPdf);
   let finalParsedData = null;
 
   const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
@@ -42,36 +38,36 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   if (isExcel) {
     finalParsedData = await processExcelExtraction(fileBuffer, sheetName, prompt, tokenUsage);
   } else if (isPdf) {
-    // 🔍 PENGECEKAN KOMPLEKSITAS SKEMA
-    const isLightSchema = !jsonSchema.items && !jsonSchema.invoice_list && (jsonSchema.fields?.length <= 5);
-    const hasItemList = Array.isArray(jsonSchema.items) || !!jsonSchema.invoice_list;
+    const hasItemList = Object.values(jsonSchema).some((val) => {
+      if (Array.isArray(val)) return true;
+      if (val && typeof val === 'object' && Array.isArray(val.items)) return true;
+      return false;
+    });
+    const isLightSchema = !hasItemList && Object.keys(jsonSchema).length <= 5;
 
-    // Cek jumlah halaman untuk routing decision
     const pdfDocCheck = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
     const numPagesPdf = pdfDocCheck.getPageCount();
-    const isHeavyDocument = hasItemList && numPagesPdf > 10;
+    const isHeavyDocument = hasItemList && numPagesPdf > 5;
+
+    console.log(`[AI-SERVICE] Routing Check -> hasItemList: ${hasItemList}, numPages: ${numPagesPdf}, isHeavy: ${isHeavyDocument}`);
 
     if (isLightSchema) {
-      // ⚡ Strategi 1: Light Mode (Halaman 1 & Terakhir)
       finalParsedData = await processLightPdfExtraction(fileBuffer, prompt, tokenUsage);
-
-      // Self-Healing Fallback
       const hasNumber = finalParsedData?.doc_number || finalParsedData?.ls_number;
       const isConfident = (finalParsedData?.confidence_score || 0) >= 0.6;
 
       if (!hasNumber || !isConfident) {
-        console.warn('[AI-SERVICE] 🔄 Hasil Light Mode kurang memuaskan. Melakukan Fallback ke Full Extraction...');
+        console.warn('[AI-SERVICE] Hasil Light Mode kurang memuaskan. Fallback ke Full Extraction...');
         finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
       }
     } else if (isHeavyDocument) {
-      // 🚀 Strategi 2: Parallel Mode (dokumen berat >10 hal dengan item list)
-      finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage);
+      // 🚀 MASUK KE ARSITEKTUR MASTER-SLAVE PARALLEL
+      finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf);
     } else {
-      // 📄 Strategi 3: Standard Sequential (dokumen normal)
       finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
     }
   } else {
-    // 🖼️ IMAGE PROCESSING (Normal 1-Shot)
+    // IMAGE PROCESSING
     const { parsedData: imgJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: mimeType } }
@@ -83,10 +79,8 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     tokenUsage.total += usageMetadata.totalTokenCount || 0;
   }
 
-
   tokenUsage.inputText = Math.max(0, tokenUsage.inputTotal - tokenUsage.ocr);
 
-  // POST-PROCESSING: Reasoning Cleanup
   if (finalParsedData && finalParsedData._reasoning) console.log(`[AI-SERVICE] AI Reasoning: ${finalParsedData._reasoning}`);
   if (Array.isArray(finalParsedData)) {
     finalParsedData.forEach((item) => delete item._reasoning);
@@ -94,18 +88,9 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     delete finalParsedData._reasoning;
   }
 
-  // POST-PROCESSING: Decompress CSV format to Array of Objects
-  if (docCode === '217' || docCode === '001') {
-    parseItemsCsv(finalParsedData, docCode);
-  }
-
-  // POST-PROCESSING: Universal Forward-Fill
   applyForwardFill(finalParsedData);
-
-  // POST-PROCESSING: Business Rules
   await applyBusinessRules(docCode, finalParsedData);
 
-  // POST-PROCESSING: Schema Contract Enforcer
   const strictParsedData = enforceSchemaStrictness(finalParsedData, jsonSchema);
   await debugLog(docCode, 'final_strict_schema_output', strictParsedData);
 

@@ -30,7 +30,15 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
   console.log('\n===========================================');
   console.log(`[EXTRACTION WORKER] Memulai Job ID: ${job.id} | Doc Code: ${job.data.docCode}`);
 
-  const { documentId, sourceFileId, splitFilePath, docCode, mimeType, sheetName = null } = job.data;
+  const {
+    documentId,
+    sourceFileId,
+    splitFilePath,
+    docCode,
+    mimeType,
+    sheetName = null,
+    isExcelToPdf = false
+  } = job.data;
   let extractionJobRecord;
 
   try {
@@ -65,7 +73,7 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
       else actualMimeType = 'application/pdf';
     }
 
-    const extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName);
+    const extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName, isExcelToPdf);
     const durationMs = Date.now() - startProcessTime;
 
     // ==============================================================

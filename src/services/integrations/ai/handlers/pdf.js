@@ -1,16 +1,15 @@
-import { PDFDocument } from 'pdf-lib';
-import { getSequentialExtractionPrompt, getItemOnlyExtractionPrompt } from '../../../../prompts/extraction/index.js';
-import { callGeminiWithRetry, mergeArraysDeep, extractOcrTokens, debugLog, parseItemsCsv } from '../helpers.js';
+/* eslint-disable camelcase */
 
-/**
- * HANDLER: PDF EXTRACTION (One-Shot vs Sequential)
- */
+import { PDFDocument } from 'pdf-lib';
+import { Type } from '@google/genai';
+import { getSequentialExtractionPrompt, getItemOnlyExtractionPrompt } from '../../../../prompts/extraction/index.js';
+import { callGeminiWithRetry, mergeArraysDeep, extractOcrTokens, debugLog, parseItemsCsv, jsonToGeminiSchema } from '../helpers.js';
+
 export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsage) => {
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
   if (pdfDoc.isEncrypted) {
-    console.log(`\n[AI-SERVICE] [PDF MODE] Secured PDF Terdeteksi! Memaksa mode ONE-SHOT Bypass (${numPages} hal)...`);
     const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
@@ -19,14 +18,10 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
     tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
     tokenUsage.ocr += extractOcrTokens(usageMetadata);
     tokenUsage.total += usageMetadata.totalTokenCount || 0;
-    await debugLog(docCode, 'one_shot_secured_pdf_output', pdfJson);
     return pdfJson;
   }
 
-  // OPTIMIZATION 1: SAFE ONE-SHOT (UP TO 8 PAGES)
-  // Threshold diturunkan dari 15 ke 8 hal untuk mencegah JSON Truncation pada data yang sangat padat.
   if (docCode === '001' && numPages <= 8) {
-    console.log(`\n[AI-SERVICE] [PDF MODE] Safe One-Shot untuk CIPL ${numPages} halaman (Akurasi Maksimal)...`);
     const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
@@ -35,33 +30,25 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
     tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
     tokenUsage.ocr += extractOcrTokens(usageMetadata);
     tokenUsage.total += usageMetadata.totalTokenCount || 0;
-    await debugLog(docCode, 'one_shot_pdf_output', pdfJson);
     return pdfJson;
   }
 
-  // OPTIMIZATION 2: CONTEXT-AWARE SEQUENTIAL EXTRACTION (> 15 PAGES)
-  console.log(`\n[AI-SERVICE] [PDF MODE] Menerapkan Context-Aware Sequential Extraction (${numPages} hal)...`);
   let masterJson = null;
-
   for (let i = 0; i < numPages; i++) {
-    console.log(`[AI-SERVICE] Memproses PDF Halaman ${i + 1}/${numPages}...`);
-
     const singlePdf = await PDFDocument.create();
     const [copiedPage] = await singlePdf.copyPages(pdfDoc, [i]);
     singlePdf.addPage(copiedPage);
     const singlePdfBytes = await singlePdf.save();
 
     const contextSummary = masterJson
-      ? `\nPREVIOUS DATA CONTEXT (Sudah diekstrak):\n- Invoice/PL Number: ${masterJson.invoice_number || masterJson.packing_list_number}\n- Last Extracted Items Count: ${masterJson.invoice_list?.[0]?.items?.length || 0}\n`
+      ? `\nPREVIOUS DATA CONTEXT:\n- Invoice/PL Number: ${masterJson.invoice_number || masterJson.packing_list_number}\n- Last Extracted Items Count: ${masterJson.invoice_list?.[0]?.items?.length || 0}\n`
       : '';
 
-    const pagePrompt = i === 0 ? prompt : getSequentialExtractionPrompt(prompt, contextSummary);
-
+    const pagePrompt = i === 0 ? prompt : getSequentialExtractionPrompt(prompt, contextSummary, docCode);
     const { parsedData: pageJson, usageMetadata } = await callGeminiWithRetry([
       pagePrompt,
       { inlineData: { data: Buffer.from(singlePdfBytes).toString('base64'), mimeType: 'application/pdf' } }
     ]);
-    await debugLog(docCode, `raw_pdf_page_${i + 1}`, pageJson);
 
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
     tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
@@ -71,30 +58,20 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
     if (i === 0) masterJson = pageJson;
     else mergeArraysDeep(masterJson, pageJson);
   }
-  await debugLog(docCode, 'merged_pdf_output', masterJson);
   return masterJson;
 };
-/**
- * HANDLER: LIGHT PDF EXTRACTION (Page 1 & Last Page Only)
- * Dioptimalkan untuk dokumen perizinan/regulasi (BPOM, AKL, POSTEL, dll)
- * yang hanya butuh doc_number & doc_date.
- */
+
 export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) => {
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
-  console.log('\n[AI-SERVICE] [LIGHT PDF MODE] Mencoba Ekstraksi Cepat (Halaman 1 & Terakhir)...');
-
-  // Jika Secured, One-Shot Bypass
   if (pdfDoc.isEncrypted) {
-    console.log('[AI-SERVICE] Secured PDF. Bypass ke One-Shot...');
     const { parsedData, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
     ]);
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
     tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
-    tokenUsage.ocr += extractOcrTokens(usageMetadata);
     tokenUsage.total += usageMetadata.totalTokenCount || 0;
     return parsedData;
   }
@@ -103,7 +80,6 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
   const pagesToCopy = numPages === 1 ? [0] : [0, numPages - 1];
   const copiedPages = await lightPdf.copyPages(pdfDoc, pagesToCopy);
   copiedPages.forEach((page) => lightPdf.addPage(page));
-
   const lightPdfBytes = await lightPdf.save();
 
   const { parsedData, usageMetadata } = await callGeminiWithRetry([
@@ -113,33 +89,21 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
 
   tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
   tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
-  tokenUsage.ocr += extractOcrTokens(usageMetadata);
   tokenUsage.total += usageMetadata.totalTokenCount || 0;
-
   return parsedData;
 };
 
-/**
- * HANDLER: PARALLEL PDF EXTRACTION (Map-Reduce + Boundary Reconciliation)
- * Dioptimalkan untuk dokumen panjang (>10 hal) dengan item list (Invoice, PL, CIPL).
- * Strategi:
- *   Phase 1: Halaman 1 diekstrak secara penuh (Header + Items)
- *   Phase 2: Halaman 2-N diekstrak paralel (Items Only) via Promise.all
- *   Phase 3: Heuristic Reconciliation pada item di batas halaman
- *   Phase 4: Merge semua hasil ke satu JSON
- */
-export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, jsonSchema, tokenUsage) => {
+// ====================================================================================
+// 🚀 ARSITEKTUR MASTER-SLAVE PARALLEL (ZERO-REGRESSION SECURE)
+// ====================================================================================
+export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf = false) => {
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
-  if (pdfDoc.isEncrypted) {
-    console.warn('[AI-SERVICE] [PARALLEL MODE] Secured PDF tidak bisa diproses paralel. Mengalihkan ke One-Shot...');
-    return processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
-  }
+  if (pdfDoc.isEncrypted) return processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
 
-  console.log(`\n[AI-SERVICE] [PARALLEL MODE] Memulai Parallel Extraction untuk ${numPages} halaman...`);
+  console.log(`\n[AI-SERVICE] [PARALLEL MODE] Memulai Ekstraksi Master-Slave untuk ${numPages} halaman...`);
 
-  // Helper: Potong satu halaman menjadi PDF buffer
   const extractPageBuffer = async (pageIndex) => {
     const singlePdf = await PDFDocument.create();
     const [page] = await singlePdf.copyPages(pdfDoc, [pageIndex]);
@@ -147,145 +111,182 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     return Buffer.from(await singlePdf.save());
   };
 
-  // ================================================================
-  // PHASE 1: Halaman 1 - Full Extraction (Header + Items)
-  // ================================================================
-  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Mengekstrak Header dari Halaman 1...');
+  let masterSchema = null;
+  let itemSchema = null;
+  let phase1HeaderOnlySchema = null;
+
+  if (isExcelToPdf && docCode === '217') {
+    // 🚀 THE FIX: Bebaskan AI dari beban membuat JSON Object. Gunakan Array of String!
+    itemSchema = { type: Type.ARRAY, items: { type: Type.STRING } };
+
+    phase1HeaderOnlySchema = {
+      type: Type.OBJECT,
+      properties: {
+        doc_code: { type: Type.STRING },
+        doc_name: { type: Type.STRING },
+        confidence_score: { type: Type.NUMBER },
+        pl_list: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              invoice_number: { type: Type.STRING },
+              invoice_date: { type: Type.STRING }
+            }
+          },
+          minItems: 1
+        }
+      },
+      required: ['pl_list']
+    };
+  } else {
+    masterSchema = jsonToGeminiSchema(jsonSchema);
+    const itemBlueprint = jsonSchema.pl_list?.[0]?.items || jsonSchema.invoice_list?.[0]?.items || jsonSchema.items || [];
+    itemSchema = jsonToGeminiSchema(itemBlueprint);
+
+    if (masterSchema && masterSchema.properties) {
+      phase1HeaderOnlySchema = JSON.parse(JSON.stringify(masterSchema));
+      delete phase1HeaderOnlySchema.properties.items;
+      if (phase1HeaderOnlySchema.properties.pl_list?.items?.properties?.items) delete phase1HeaderOnlySchema.properties.pl_list.items.properties.items;
+      if (phase1HeaderOnlySchema.properties.invoice_list?.items?.properties?.items) delete phase1HeaderOnlySchema.properties.invoice_list.items.properties.items;
+    }
+  }
+
+  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Mengekstrak Header...');
   const page1Buffer = await extractPageBuffer(0);
-  const { parsedData: headerData, usageMetadata: headerMeta } = await callGeminiWithRetry([
-    prompt,
+
+  let masterPrompt = prompt;
+  if (isExcelToPdf && docCode === '217') {
+    masterPrompt = `${prompt}\n\nCRITICAL INSTRUCTION KHUSUS PHASE 1: JANGAN PERNAH MENGEKSTRAK BARIS BARANG (items / items_csv)! ABAIKAN BLUEPRINT ITEM. Ekstrak HANYA Header. Output WAJIB berupa objek JSON murni tanpa isi data barang.`;
+  } else {
+    masterPrompt = `${prompt}\n\nCRITICAL INSTRUCTION: Ekstrak HANYA informasi Header (seperti nomor dokumen, tanggal, dll). JANGAN ekstrak tabel baris barang.`;
+  }
+
+  const { parsedData: rawMasterJson, usageMetadata: headerMeta } = await callGeminiWithRetry([
+    masterPrompt,
     { inlineData: { data: page1Buffer.toString('base64'), mimeType: 'application/pdf' } }
-  ]);
+  ], 3, phase1HeaderOnlySchema);
+
   tokenUsage.inputTotal += headerMeta.promptTokenCount || 0;
   tokenUsage.output += headerMeta.candidatesTokenCount || 0;
   tokenUsage.ocr += extractOcrTokens(headerMeta);
   tokenUsage.total += headerMeta.totalTokenCount || 0;
 
-  const masterJson = headerData;
-  if (docCode === '001' || docCode === '217') {
-    parseItemsCsv(masterJson, docCode);
+  let masterJson = rawMasterJson;
+  if (Array.isArray(rawMasterJson)) masterJson = { doc_code: docCode, pl_list: [{ invoice_number: 'UNKNOWN' }] };
+
+  if (docCode === '217') {
+    if (!masterJson.pl_list || masterJson.pl_list.length === 0) masterJson.pl_list = [{ invoice_number: masterJson.doc_code || 'UNKNOWN' }];
+    masterJson.pl_list.forEach((pl) => { pl.items = []; }); // Pastikan rumahnya bersih
+  } else {
+    const targetListKey = masterJson.invoice_list ? 'invoice_list' : 'pl_list';
+    if (!masterJson[targetListKey] || masterJson[targetListKey].length === 0) masterJson[targetListKey] = [{}];
+    if (!masterJson[targetListKey][0].items) masterJson[targetListKey][0].items = [];
   }
-  await debugLog(docCode, 'parallel_page_1_header', masterJson);
 
-  if (numPages === 1) return masterJson;
+  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan worker paralel...');
+  const itemOnlyPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema, isExcelToPdf);
+  const parallelResults = [];
+  const CONCURRENCY_LIMIT = 5;
+  const pagesToProcess = Array.from({ length: numPages }, (_, i) => i);
 
-  // Jika hanya 2 halaman, halaman 2 sekaligus menjadi halaman terakhir (Full Extraction)
-  const lastPageIndex = numPages - 1;
+  for (let i = 0; i < pagesToProcess.length; i += CONCURRENCY_LIMIT) {
+    const batchPages = pagesToProcess.slice(i, i + CONCURRENCY_LIMIT);
+    const batchTasks = batchPages.map(async (pageIndex) => {
+      const pageBuffer = await extractPageBuffer(pageIndex);
 
-  // ================================================================
-  // PHASE 2: Halaman 2-N - Parallel Extraction
-  //   - Halaman TENGAH (2 s/d N-1): Item-Only Prompt (Cepat & Hemat Token)
-  //   - Halaman TERAKHIR (N) : Full Prompt (Tangkap Total, Tanda Tangan, Footer)
-  // ================================================================
-  console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages - 1} worker paralel...`);
-  const itemOnlyPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema);
+      const { parsedData: rawData, usageMetadata: pageMeta } = await callGeminiWithRetry([
+        itemOnlyPrompt,
+        { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
+      ], 3, itemSchema);
 
-  // Helper & Konstanta dideklarasikan DI SINI agar tersedia saat
-  // async worker paralel resolve (mencegah Temporal Dead Zone error)
-  const getItemArray = (data) => {
-    if (Array.isArray(data?.items)) return data.items;
-    if (Array.isArray(data?.invoice_list?.[0]?.items)) return data.invoice_list[0].items;
-    return [];
-  };
+      tokenUsage.inputTotal += pageMeta.promptTokenCount || 0;
+      tokenUsage.output += pageMeta.candidatesTokenCount || 0;
+      tokenUsage.ocr += extractOcrTokens(pageMeta);
+      tokenUsage.total += pageMeta.totalTokenCount || 0;
 
-  const IDENTITY_KEYS = ['hs_code', 'number_item', 'item_no', 'description', 'commodity'];
-  const VALUE_KEYS = ['quantity', 'unit_price', 'amount', 'net_weight', 'gross_weight'];
+      let items = [];
+      if (Array.isArray(rawData)) items = rawData;
+      else if (rawData && typeof rawData === 'object') {
+        const potentialItems = rawData.items_csv || rawData.items || [];
+        if (Array.isArray(potentialItems)) items = potentialItems;
+      }
 
-  const isLikelyContinuation = (prevLast, nextFirst) => {
-    if (!prevLast || !nextFirst) return false;
-    const hasIdentity = IDENTITY_KEYS.some((k) => nextFirst[k]);
-    const hasValue = VALUE_KEYS.some((k) => nextFirst[k]);
-    return !hasIdentity && hasValue;
-  };
+      return { pageIndex, items };
+    });
 
-  const parallelTasks = Array.from({ length: numPages - 1 }, (_, i) => i + 1).map(async (pageIndex) => {
-    const isLastPage = pageIndex === lastPageIndex;
-    const pageBuffer = await extractPageBuffer(pageIndex);
+    const batchResults = await Promise.all(batchTasks);
+    parallelResults.push(...batchResults);
+    if (i + CONCURRENCY_LIMIT < pagesToProcess.length) await new Promise((res) => setTimeout(res, 2000));
+  }
 
-    // Halaman terakhir → Full Prompt agar Total/Footer data tertangkap
-    const selectedPrompt = isLastPage ? prompt : itemOnlyPrompt;
-
-    const { parsedData: rawData, usageMetadata: pageMeta } = await callGeminiWithRetry([
-      selectedPrompt,
-      { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
-    ]);
-
-    tokenUsage.inputTotal += pageMeta.promptTokenCount || 0;
-    tokenUsage.output += pageMeta.candidatesTokenCount || 0;
-    tokenUsage.ocr += extractOcrTokens(pageMeta);
-    tokenUsage.total += pageMeta.totalTokenCount || 0;
-
-    return {
-      pageIndex,
-      isLastPage,
-      // Untuk halaman tengah: rawData langsung berupa array items
-      // Untuk halaman terakhir: rawData berupa object penuh, kita ambil items-nya
-      items: isLastPage ? getItemArray(rawData) : (Array.isArray(rawData) ? rawData : []),
-      fullData: isLastPage ? rawData : null,
-    };
-  });
-
-  const parallelResults = await Promise.all(parallelTasks);
   parallelResults.sort((a, b) => a.pageIndex - b.pageIndex);
-  console.log(`[AI-SERVICE] [PARALLEL MODE] Semua ${parallelResults.length} worker selesai.`);
 
-  // ================================================================
-  // PHASE 3: Heuristic Boundary Reconciliation
-  // Deteksi item terpotong di antara dua halaman berurutan
-  // ================================================================
+  // --- 4. PHASE 3: NODE.JS ROW-LEVEL STITCHER ---
+  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 3: Penjahitan Row-Level Mapping...');
 
-  // ================================================================
-  // PHASE 4: Merge semua hasil ke masterJson
-  // ================================================================
-  const masterItems = getItemArray(masterJson);
+  let lastSeenInvoiceNo = masterJson.pl_list[0].invoice_number || 'UNKNOWN';
 
   for (let i = 0; i < parallelResults.length; i++) {
-    const { items: pageItems, isLastPage, fullData } = parallelResults[i];
+    const { items: pageItems } = parallelResults[i];
+    if (!pageItems || pageItems.length === 0) continue;
 
-    // Rekonsiliasi batas halaman (item terpotong antar halaman)
-    const prevItems = i === 0 ? masterItems : (parallelResults[i - 1]?.items || []);
-    if (prevItems.length > 0 && pageItems.length > 0) {
-      const prevLast = prevItems[prevItems.length - 1];
-      const nextFirst = pageItems[0];
-      if (isLikelyContinuation(prevLast, nextFirst)) {
-        const pageNum = parallelResults[i].pageIndex + 1;
-        console.log(`[AI-SERVICE] [PARALLEL MODE] 🔀 Rekonsiliasi: Menjahit item terpotong di batas Hal ${pageNum - 1} & Hal ${pageNum}`);
-        Object.assign(prevLast, nextFirst);
-        pageItems.shift();
-      }
+    if (docCode === '217' && isExcelToPdf) {
+      // Skema 13 Kolom Klien (Index 0 dibuang karena itu invoice_number)
+      const keys = ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit'];
+
+      pageItems.forEach((line) => {
+        if (typeof line !== 'string') return;
+        const parts = line.split('|');
+        if (parts.length < 2) return; // Skip baris error
+
+        // 🚀 ROW-LEVEL STITCHING: Baca invoice dari KOLOM PERTAMA pada String!
+        let currentInvoiceNo = parts[0] ? parts[0].trim() : '';
+
+        if (!currentInvoiceNo || currentInvoiceNo === 'CONTINUATION_PAGE' || currentInvoiceNo === 'UNKNOWN') {
+          currentInvoiceNo = lastSeenInvoiceNo;
+        } else {
+          lastSeenInvoiceNo = currentInvoiceNo; // Update Tracker
+        }
+
+        let targetInvoice = masterJson.pl_list.find((pl) => pl.invoice_number === currentInvoiceNo);
+        if (!targetInvoice) {
+          targetInvoice = { invoice_number: currentInvoiceNo, items: [] };
+          masterJson.pl_list.push(targetInvoice);
+        }
+        if (!targetInvoice.items) targetInvoice.items = [];
+
+        // 🚀 TRANSLASI STR KE OBJECT SECARA AMAN
+        const obj = {};
+        keys.forEach((k, idx) => {
+          let val = parts[idx + 1] ? parts[idx + 1].trim() : null; // idx+1 untuk melewati invoice_number
+          if (val === '') val = null;
+          else if (['quantity', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'unit_price', 'amount'].includes(k) && val) {
+            const cleanedStr = val.toString().replace(/[^\d.-]/g, '');
+            val = cleanedStr !== '' ? Number(cleanedStr) : null;
+          }
+          obj[k] = val;
+        });
+
+        targetInvoice.items.push(obj);
+      });
+    } else {
+      const targetListKey = masterJson.invoice_list ? 'invoice_list' : 'pl_list';
+      masterJson[targetListKey][0].items.push(...pageItems);
     }
+  }
 
-    // Merge footer/summary dari halaman terakhir ke masterJson
-    // mergeArraysDeep hanya mengisi field yang masih null — tidak menimpa data halaman 1
-    if (isLastPage && fullData) {
-      console.log('[AI-SERVICE] [PARALLEL MODE] 🧩 Merging Last Page (Footer/Summary Data)...');
-      if (docCode === '001' || docCode === '217') {
-        parseItemsCsv(fullData, docCode);
-      }
-      mergeArraysDeep(masterJson, fullData);
-    }
-
-    if (pageItems.length === 0) continue;
-
-    // Sisipkan items ke struktur masterJson (hanya untuk halaman non-last)
-    // Halaman terakhir sudah di-merge via mergeArraysDeep di atas
-    if (!isLastPage) {
-      if (Array.isArray(masterJson?.invoice_list)) {
-        if (!masterJson.invoice_list[0]) masterJson.invoice_list[0] = { items: [] };
-        if (!Array.isArray(masterJson.invoice_list[0].items)) masterJson.invoice_list[0].items = [];
-        masterJson.invoice_list[0].items.push(...pageItems);
-      } else {
-        if (!Array.isArray(masterJson.items)) masterJson.items = [];
-        masterJson.items.push(...pageItems);
-      }
-    }
+  // Bersihkan invoice kosong bawaan Phase 1
+  if (docCode === '217' && isExcelToPdf) {
+    masterJson.pl_list = masterJson.pl_list.filter((pl) => pl.items && pl.items.length > 0);
+  } else if (docCode === '001') {
+    parseItemsCsv(masterJson, docCode); // Helper lama hanya untuk 001
   }
 
   await debugLog(docCode, 'parallel_merged_output', masterJson);
-  const totalItems = getItemArray(masterJson).length;
-  console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai. Total item terkumpul: ${totalItems}`);
+
+  const finalItemsCount = docCode === '217' ? masterJson.pl_list?.reduce((acc, pl) => acc + (pl.items?.length || 0), 0) : (masterJson.invoice_list?.[0]?.items?.length || masterJson.pl_list?.[0]?.items?.length);
+  console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai. Total item dirakit & digroup: ${finalItemsCount || 0}`);
+
   return masterJson;
 };
-
-
-
