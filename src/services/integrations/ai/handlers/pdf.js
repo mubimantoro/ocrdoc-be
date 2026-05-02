@@ -66,6 +66,7 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
 
   console.log('\n[AI-SERVICE] [LIGHT PDF MODE] Mencoba Ekstraksi Cepat (Halaman 1 & Terakhir)...');
 
+  // Jika Secured, One-Shot Bypass
   if (pdfDoc.isEncrypted) {
     console.log('[AI-SERVICE] Secured PDF. Bypass ke One-Shot...');
     const { parsedData, usageMetadata } = await callGeminiWithRetry([prompt, { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }]);
@@ -77,10 +78,19 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
   const pagesToCopy = numPages === 1 ? [0] : [0, numPages - 1];
   const copiedPages = await lightPdf.copyPages(pdfDoc, pagesToCopy);
   copiedPages.forEach((page) => lightPdf.addPage(page));
+
   const lightPdfBytes = await lightPdf.save();
 
-  const { parsedData, usageMetadata } = await callGeminiWithRetry([prompt, { inlineData: { data: Buffer.from(lightPdfBytes).toString('base64'), mimeType: 'application/pdf' } }]);
-  tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0; tokenUsage.output += usageMetadata.candidatesTokenCount || 0; tokenUsage.ocr += extractOcrTokens(usageMetadata); tokenUsage.total += usageMetadata.totalTokenCount || 0;
+  const { parsedData, usageMetadata } = await callGeminiWithRetry([
+    prompt,
+    { inlineData: { data: Buffer.from(lightPdfBytes).toString('base64'), mimeType: 'application/pdf' } }
+  ]);
+
+  tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
+  tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
+  tokenUsage.ocr += extractOcrTokens(usageMetadata);
+  tokenUsage.total += usageMetadata.totalTokenCount || 0;
+
   return parsedData;
 };
 

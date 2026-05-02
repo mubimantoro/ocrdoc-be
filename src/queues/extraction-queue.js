@@ -309,5 +309,5 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
     throw error;
   }
 }, { connection,
-  concurrency: 2,
+  concurrency: 20,
   lockDuration: 5 * 60 * 1000 });
