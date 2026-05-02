@@ -54,6 +54,10 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     const numPagesPdf = pdfDocCheck.getPageCount();
     const isHeavyDocument = hasItemList && numPagesPdf > 5;
 
+    // 🚀 THE FIX: Pastikan 217_EXCEL selalu masuk ke Parallel (karena logika 14-kolom ada di sana)
+    const isSpecialExcelPdf = isExcelToPdf && docCode === '217';
+    const forceParallel = isHeavyDocument || isSpecialExcelPdf;
+
     console.log(`[AI-SERVICE] Routing Check -> hasItemList: ${hasItemList}, numPages: ${numPagesPdf}, isHeavy: ${isHeavyDocument}`);
 
     if (isLightSchema) {
@@ -66,11 +70,11 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
         console.warn('[AI-SERVICE] Hasil Light Mode kurang memuaskan. Fallback ke Full Extraction...');
         finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
       }
-    } else if (isHeavyDocument) {
-      // 🚀 Strategi 2: Parallel Mode (Menggunakan isExcelToPdf flag)
+    } else if (forceParallel) {
+      // Masuk ke arsitektur master-slave
       finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf);
     } else {
-      // 📄 Strategi 3: Standard Sequential
+      // Sequential mode normal
       finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
     }
   } else {

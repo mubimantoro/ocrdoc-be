@@ -24,50 +24,35 @@ const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
 };
 
 export const getExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false) => {
-
-  // ZERO-REGRESSION ROUTING
+  // Pilih instruksi spesifik: jika mode Excel-to-PDF dan ada varian _EXCEL, gunakan itu.
   let lookupCode = docCode;
-  let activeSchemaObj = schemaDefinition;
-
   if (isExcelToPdf && DOCUMENT_SPECIFIC_INSTRUCTIONS[`${docCode}_EXCEL`]) {
     lookupCode = `${docCode}_EXCEL`;
-
-    if (docCode === '217') {
-      // 🚀 THE TOKEN-SAVER BLUEPRINT HACK (KHUSUS EXCEL 217)
-      // Mengubah items menjadi items_csv (Array of Strings) agar selaras dengan kuncian API.
-      activeSchemaObj = {
-        'pl_list': {
-          'fields': ['invoice_number', 'invoice_date'],
-          'items_csv': [
-            'number | description | quantity | quantity_unit | net_weight | gross_weight | measurement'
-          ]
-        }
-      };
-    }
   }
+
   const specificInstructions = DOCUMENT_SPECIFIC_INSTRUCTIONS[lookupCode] || '';
 
   const base = `Kamu adalah 'Data Extraction AI' tingkat lanjut yang ahli memproses dokumen operasional logistik, bea cukai, dan rantai pasok internasional.
 Tugasmu adalah menganalisis dokumen PDF terlampir dan mengekstrak HANYA data yang eksplisit tertulis menjadi JSON aktual.
-
+ 
 PENTING: JSON di bawah ini BUKAN format output akhir, melainkan BLUEPRINT (Kerangka Meta-Schema) yang mengatur data apa saja yang harus diekstrak.
-
+ 
 BLUEPRINT SCHEMA:
-${JSON.stringify(activeSchemaObj)}
-
+${JSON.stringify(schemaDefinition)}
+ 
 ATURAN INTERPRETASI BLUEPRINT (CARA MERAKIT OUTPUT JSON):
 1. ATURAN "fields" (HEADER): Ubah array "fields" menjadi root-level keys dengan nilai tunggal.
 2. ATURAN LIST/ARRAY ("items", "packs", dll): Buat ARRAY OF OBJECTS. Setiap baris fisik di dokumen menjadi satu objek.
 3. ATURAN NESTED LIST (misal "invoice_list"): Buat ARRAY OF OBJECTS utama. Di dalamnya, ekstrak data parent berdasarkan "fields", dan buat array detailnya berdasarkan "items".
-
+ 
 ${specificInstructions}
-
+ 
 ATURAN OUTPUT KETAT (PENGHEMATAN TOKEN):
 1. PRETTY-PRINTED JSON: Gunakan indentasi dan baris baru (\\n) agar struktur JSON tetap terjaga dan tidak terputus di tengah jalan.
 2. CLEAN JSON: HANYA output 1 JSON object valid. DILARANG menggunakan blok markdown (\`\`\`json) atau menambahkan teks komentar apapun.
 3. TOKEN DIET (KHUSUS ARRAY): Khusus di dalam array of objects ("items", "pl_list", dll), JANGAN menyertakan property/key yang bernilai null. Hilangkan saja key tersebut dari object untuk menghemat output token.
 4. ANTI-REPETISI: JANGAN menyalin/mengulang data statis parent (seperti vendor_name, origin_country) ke setiap baris item jika datanya sama. Cukup taruh di header.
-
+ 
 ATURAN KONTEN & ANTI-DRIFT (KUALITAS DATA):
 1. STRICT KEYS: JANGAN PERNAH membuat key baru yang tidak ada di dalam blueprint.
 2. NO INFERENCE (JANGAN MENEBAK): Ekstrak HANYA data eksplisit. Jangan menebak dari konteks yang tidak tertulis. Jika ragu atau tidak ada: null.
@@ -78,7 +63,7 @@ ATURAN KONTEN & ANTI-DRIFT (KUALITAS DATA):
 7. PHONE & CURRENCY: Nomor telepon dipertahankan tanda plus (+)-nya jika ada. Jika ada currency_code di header, anggap semua item menggunakan mata uang tersebut kecuali tertulis lain.`;
 
   return `${base}
-
+ 
 ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 1. Terapkan teknik "Chain of Thought". Buat key "_reasoning" di baris paling atas pada output JSON.
 2. ATURAN REASONING: WAJIB SANGAT SINGKAT! Maksimal 2 kalimat pendek.
@@ -89,7 +74,8 @@ ABSOLUTE DIRECTIVE (MANUAL OVERRIDE & UNIVERSAL EXTRACTION MODE):
 };
 
 /**
- * Mendapatkan prompt untuk ekstraksi sekuensial (halaman lanjutan)
+ * Mendapatkan prompt untuk ekstraksi sekuensial (halaman lanjutan).
+ * docCode digunakan untuk instruksi scoped khusus per jenis dokumen (misal: COO 861).
  */
 export const getSequentialExtractionPrompt = (basePrompt, contextSummary, docCode) => {
   const isCooManual = docCode === '861';
@@ -113,56 +99,73 @@ CRITICAL DIRECTIVE FOR COO:
 
 /**
  * Prompt khusus untuk ekstraksi item-only (Parallel Mode).
+ * isExcelToPdf: aktifkan jalur flat-array 14-kolom khusus 217_EXCEL.
  */
 export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false) => {
   const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
 
-
+  // ================================================================
+  // JALUR KHUSUS 217_EXCEL (FLAT ARRAY 14-KOLOM)
+  // ================================================================
   if (isExcelToPdf && docCode === '217') {
     return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT: Ekstrak HANYA baris data tabel.
-
+ 
 ATURAN KETAT:
 1. OUTPUT WAJIB ARRAY OF STRINGS MURNI (Flat Array).
 2. DILARANG MEMBUAT OBJECT JSON! Langsung buka dengan bracket "[" dan isi dengan string.
 3. Format String WAJIB 14 kolom urut: invoice_number | number | description | quantity | quantity_unit | origin | brand | net_weight | gross_weight | amount | unit_price | measurement | packaging_qty | packaging_unit
 4. Kolom pertama (invoice_number) WAJIB diisi dengan "Billing Document" yang tercetak sebaris dengan barang tersebut. Jika tidak ada, isi "CONTINUATION_PAGE".
 5. Pisahkan dengan karakter pipe (|). Jika data kosong, biarkan kosong di antara pipe. Pastikan setiap baris string memiliki tepat 13 buah karakter pipe (|).
-
+ 
 Contoh Output:
 [
   "395536361|10|BACKHAUS TOWEL CLAMP 135MM|10|PCE|||0.31|0.32|180|18|||",
   "395536361|20|HALSTED-MOSQUITO FORCEPS|20|PCE|||0.41|0.42|200|10|||"
 ]
-
+ 
 CRITICAL: Output HANYA JSON Array of Strings yang tertutup sempurna!`;
   }
 
-  let lookupCode = docCode;
-  const itemBlueprint = schemaDefinition.items || schemaDefinition.invoice_list?.[0]?.items || schemaDefinition.pl_list?.[0]?.items || [];
+  // ================================================================
+  // JALUR STANDAR — SEMUA DOKUMEN LAIN (001, 217 normal, 380, 861, dll)
+  // ================================================================
 
+  // Pilih instruksi spesifik: gunakan varian _EXCEL jika ada dan relevan
+  let lookupCode = docCode;
   if (isExcelToPdf && DOCUMENT_SPECIFIC_INSTRUCTIONS[`${docCode}_EXCEL`]) {
     lookupCode = `${docCode}_EXCEL`;
   }
 
   const specificInstructions = DOCUMENT_SPECIFIC_INSTRUCTIONS[lookupCode] || '';
-  const cooParallelDirective = docCode === '861' ? '\nCRITICAL COO RULE: Jika baris teratas di halaman ini adalah potongan deskripsi/harga tanpa Nomor Urut (Item Number), EKSTRAK SEBAGAI OBJECT SENDIRI dengan "item_number": null. Dilarang mengabaikannya!' : '';
+  const cooParallelDirective = docCode === '861'
+    ? '\nCRITICAL COO RULE: Jika baris teratas di halaman ini adalah potongan deskripsi/harga tanpa Nomor Urut (Item Number), EKSTRAK SEBAGAI OBJECT SENDIRI dengan "item_number": null. Dilarang mengabaikannya!'
+    : '';
+
+  // ✅ FIX: Gunakan schemaDefinition.invoice_list?.items (bukan [0]?.items).
+  // schemaDefinition adalah object blueprint/meta-schema, bukan array instance data.
+  // Mengakses [0] pada blueprint selalu undefined karena invoice_list di schema adalah
+  // object deskriptor, bukan array aktual — menyebabkan itemBlueprint selalu jadi [].
+  const itemBlueprint = schemaDefinition.items
+    || schemaDefinition.invoice_list?.items
+    || schemaDefinition.pl_list?.items
+    || [];
 
   return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT:
 Ekstrak HANYA baris-baris data dari tabel/list yang ada di halaman ini.
-
+ 
 TARGET KEY: "${itemKey}"
-
+ 
 ATURAN KETAT:
 1. OUTPUT HANYA array JSON. Contoh: [{...}, {...}]
 2. JANGAN bungkus array tersebut di dalam key apapun (jangan gunakan "pl_list" atau "items"). Langsung buka dengan bracket "[" dan tutup dengan "]".
 3. JANGAN sertakan header dokumen (nomor, tanggal, vendor, dll).
 4. Jika halaman ini tidak mengandung baris tabel (misal: halaman cover/tanda tangan), return array kosong: []
 5. Setiap item WAJIB memiliki minimal satu field yang terisi.${cooParallelDirective}
-
+ 
 ${specificInstructions}
-
+ 
 BLUEPRINT FIELDS PER ITEM:
 ${JSON.stringify(itemBlueprint)}
-
+ 
 CRITICAL: Output harus berupa JSON array yang valid dan tertutup sempurna.`;
 };
