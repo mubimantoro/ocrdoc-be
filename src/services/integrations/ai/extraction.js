@@ -52,13 +52,23 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     // Cek jumlah halaman untuk routing decision
     const pdfDocCheck = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
     const numPagesPdf = pdfDocCheck.getPageCount();
+
+
+    // 🚀 217_EXCEL selalu masuk ke Parallel (karena logika 14-kolom ada di sana)
+    const isSpecialExcelPdf = isExcelToPdf && docCode === '217';
+
+    // Dokumen dianggap "berat" jika punya item list DAN > 5 halaman.
+    // Threshold 5 dipertahankan untuk dokumen umum (001, 217, 861, dll).
     const isHeavyDocument = hasItemList && numPagesPdf > 5;
 
-    // 🚀 THE FIX: Pastikan 217_EXCEL selalu masuk ke Parallel (karena logika 14-kolom ada di sana)
-    const isSpecialExcelPdf = isExcelToPdf && docCode === '217';
+    const isShortInvoice = docCode === '380' && hasItemList && numPagesPdf <= 5;
+
+
+
     const forceParallel = isHeavyDocument || isSpecialExcelPdf;
 
-    console.log(`[AI-SERVICE] Routing Check -> hasItemList: ${hasItemList}, numPages: ${numPagesPdf}, isHeavy: ${isHeavyDocument}`);
+    console.log(`[AI-SERVICE] Routing Check -> docCode: ${docCode}, hasItemList: ${hasItemList}, numPages: ${numPagesPdf}, isHeavy: ${isHeavyDocument}, isShortInvoice: ${isShortInvoice}`);
+
 
     if (isLightSchema) {
       // ⚡ Strategi 1: Light Mode
@@ -70,11 +80,25 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
         console.warn('[AI-SERVICE] Hasil Light Mode kurang memuaskan. Fallback ke Full Extraction...');
         finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
       }
+    } else if (isShortInvoice) {
+      // ⚡ Strategi 2: One-Shot untuk Invoice (380) pendek (≤ 5 halaman)
+      // Mengirim seluruh PDF sekaligus agar AI mendapat konteks penuh —
+      // menghindari kegagalan Sequential mode pada format vendor dengan banyak halaman non-item.
+      console.log(`\n[AI-SERVICE] [ONE-SHOT MODE] Invoice 380 pendek (${numPagesPdf} hal) — Full Context Extraction...`);
+      const { parsedData: oneShotJson, usageMetadata } = await callGeminiWithRetry([
+        prompt,
+        { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
+      ]);
+      tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
+      tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
+      tokenUsage.ocr += extractOcrTokens(usageMetadata);
+      tokenUsage.total += usageMetadata.totalTokenCount || 0;
+      finalParsedData = oneShotJson;
     } else if (forceParallel) {
-      // Masuk ke arsitektur master-slave
+      // 🚀 Strategi 3: Parallel mode untuk dokumen berat atau 217_EXCEL
       finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf);
     } else {
-      // Sequential mode normal
+      // 📄 Strategi 4: Sequential mode untuk dokumen non-heavy lainnya
       finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
     }
   } else {
