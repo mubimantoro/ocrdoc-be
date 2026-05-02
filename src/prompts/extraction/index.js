@@ -99,31 +99,61 @@ CRITICAL DIRECTIVE FOR COO:
 
 /**
  * Prompt khusus untuk ekstraksi item-only (Parallel Mode).
- * isExcelToPdf: aktifkan jalur flat-array 14-kolom khusus 217_EXCEL.
+ *
+ * Untuk 217_EXCEL: menggunakan pendekatan universal — AI memahami struktur
+ * dokumen secara mandiri tanpa mapping kolom hardcode, karena format Excel
+ * antar vendor berbeda-beda (grid tabular, hybrid template, dst).
  */
 export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false) => {
   const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
 
   // ================================================================
-  // JALUR KHUSUS 217_EXCEL (FLAT ARRAY 14-KOLOM)
+  // JALUR KHUSUS 217_EXCEL — PENDEKATAN UNIVERSAL
+  //
+  // Tidak ada mapping kolom hardcode. AI memahami struktur dokumen
+  // secara mandiri dan memetakannya ke schema PL yang sudah ada.
+  // Berlaku untuk semua format Excel-converted PL dari vendor apapun.
   // ================================================================
   if (isExcelToPdf && docCode === '217') {
-    return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT: Ekstrak HANYA baris data tabel.
+    const itemBlueprint = schemaDefinition.items
+      || schemaDefinition.pl_list?.items
+      || schemaDefinition.invoice_list?.items
+      || [];
+
+    return `Kamu adalah AI Extractor untuk dokumen Packing List yang dihasilkan dari file Excel (Excel-to-PDF).
  
-ATURAN KETAT:
-1. OUTPUT WAJIB ARRAY OF STRINGS MURNI (Flat Array).
-2. DILARANG MEMBUAT OBJECT JSON! Langsung buka dengan bracket "[" dan isi dengan string.
-3. Format String WAJIB 14 kolom urut: invoice_number | number | description | quantity | quantity_unit | origin | brand | net_weight | gross_weight | amount | unit_price | measurement | packaging_qty | packaging_unit
-4. Kolom pertama (invoice_number) WAJIB diisi dengan "Billing Document" yang tercetak sebaris dengan barang tersebut. Jika tidak ada, isi "CONTINUATION_PAGE".
-5. Pisahkan dengan karakter pipe (|). Jika data kosong, biarkan kosong di antara pipe. Pastikan setiap baris string memiliki tepat 13 buah karakter pipe (|).
+KONTEKS DOKUMEN:
+Dokumen ini adalah Packing List yang dikonversi dari Excel ke PDF. Formatnya bisa berupa:
+- Grid spreadsheet dengan banyak kolom (tabular murni)
+- Template Excel hybrid dengan tabel dan teks narasi
+- Layout apapun sesuai template vendor
  
-Contoh Output:
-[
-  "395536361|10|BACKHAUS TOWEL CLAMP 135MM|10|PCE|||0.31|0.32|180|18|||",
-  "395536361|20|HALSTED-MOSQUITO FORCEPS|20|PCE|||0.41|0.42|200|10|||"
-]
+TUGASMU: Ekstrak SEMUA baris data barang dari halaman ini ke dalam format JSON array.
  
-CRITICAL: Output HANYA JSON Array of Strings yang tertutup sempurna!`;
+PRINSIP UNIVERSAL (berlaku untuk format apapun):
+1. Identifikasi secara mandiri mana yang merupakan "nomor dokumen induk" (bisa berupa: Billing Document, Invoice No, PO No, Delivery No, atau identifier lain yang mengelompokkan baris-baris item).
+2. Identifikasi mana yang merupakan "nomor urut item" dalam satu dokumen induk.
+3. Identifikasi kolom description, quantity, unit, berat, harga jika ada.
+4. Jika satu item memiliki beberapa sub-baris (batch, lot, partial shipment), ekstrak SETIAP sub-baris sebagai item terpisah dengan nomor induk dan nomor urut yang sama.
+5. Abaikan baris yang merupakan header kolom, baris total/summary, dan baris kosong.
+6. EKSTRAK SEMUA baris hingga baris terakhir di halaman ini — jangan berhenti di tengah.
+ 
+TARGET SCHEMA PER ITEM:
+${JSON.stringify(itemBlueprint)}
+ 
+ATURAN OUTPUT:
+1. OUTPUT HANYA JSON array. Buka dengan "[" dan tutup dengan "]".
+2. JANGAN bungkus dalam key apapun — langsung array.
+3. JANGAN sertakan key yang nilainya null atau kosong.
+4. Setiap object item WAJIB memiliki minimal satu field yang terisi.
+5. WAJIB: Sertakan field "invoice_number" di SETIAP item object, diisi dengan nomor dokumen
+   induk yang mengelompokkan item tersebut (Billing Document / PO No / Invoice No / dll).
+   Ini kritis untuk pengelompokan item yang benar di sistem backend.
+   Jika satu halaman memiliki item dari beberapa dokumen induk yang berbeda, pastikan
+   setiap item membawa invoice_number miliknya sendiri — jangan pakai nilai yang sama
+   untuk semua item jika invoice_number-nya berbeda.
+ 
+CRITICAL: Output harus berupa JSON array yang valid dan tertutup sempurna dengan "]".`;
   }
 
   // ================================================================
@@ -141,10 +171,6 @@ CRITICAL: Output HANYA JSON Array of Strings yang tertutup sempurna!`;
     ? '\nCRITICAL COO RULE: Jika baris teratas di halaman ini adalah potongan deskripsi/harga tanpa Nomor Urut (Item Number), EKSTRAK SEBAGAI OBJECT SENDIRI dengan "item_number": null. Dilarang mengabaikannya!'
     : '';
 
-  // ✅ FIX: Gunakan schemaDefinition.invoice_list?.items (bukan [0]?.items).
-  // schemaDefinition adalah object blueprint/meta-schema, bukan array instance data.
-  // Mengakses [0] pada blueprint selalu undefined karena invoice_list di schema adalah
-  // object deskriptor, bukan array aktual — menyebabkan itemBlueprint selalu jadi [].
   const itemBlueprint = schemaDefinition.items
     || schemaDefinition.invoice_list?.items
     || schemaDefinition.pl_list?.items
