@@ -10,6 +10,51 @@ import { processExcelExtraction } from './handlers/excel.js';
 import { PDFDocument } from 'pdf-lib';
 import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtraction } from './handlers/pdf.js';
 
+/**
+ * POST-PROCESSING: Buang item ghost di mana semua field bernilai null/undefined/string kosong.
+ *
+ * Konteks: enforceSchemaStrictness meng-inject semua key schema dengan nilai null
+ * ke setiap item. Item "ghost" seperti {invoice_number: ""} yang lolos dari
+ * routeItemToList (karena invoice_number empty string dianggap sebagai fallback
+ * ke entry pertama) kemudian setelah strip invoice_number menjadi {} kosong,
+ * lalu enforcer meng-inject semua null → item all-null muncul di output final.
+ *
+ * AMAN untuk sub-baris batch dengan amount=0, quantity=1, net_weight=0.001
+ * karena nilai 0 dan angka valid TIDAK dianggap null oleh fungsi ini.
+ *
+ * Dipanggil SETELAH applyForwardFill dan SEBELUM applyBusinessRules.
+ */
+const purgeNullItems = (data) => {
+  if (!data || typeof data !== 'object') return;
+
+  const isNullItem = (item) =>
+    !item ||
+    typeof item !== 'object' ||
+    Object.values(item).every((v) => v === null || v === undefined || v === '');
+
+  // Hapus item dari array secara in-place (splice dari belakang agar index tidak bergeser)
+  const purgeFromArray = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (isNullItem(arr[i])) {
+        console.log(`[AI-SERVICE] [PURGE] Item all-null di index ${i} dibuang.`);
+        arr.splice(i, 1);
+      }
+    }
+  };
+
+  // Cakupan: pl_list[*].items, invoice_list[*].items, items root
+  if (Array.isArray(data.pl_list)) {
+    data.pl_list.forEach((entry) => purgeFromArray(entry?.items));
+  }
+  if (Array.isArray(data.invoice_list)) {
+    data.invoice_list.forEach((entry) => purgeFromArray(entry?.items));
+  }
+  if (Array.isArray(data.items)) {
+    purgeFromArray(data.items);
+  }
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -134,6 +179,11 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
 
   // POST-PROCESSING: Universal Forward-Fill
   applyForwardFill(finalParsedData);
+
+  // POST-PROCESSING: Buang item ghost (semua field null)
+  // Dipanggil setelah forwardFill agar item yang sebelumnya kosong
+  // tapi sudah diisi via forward-fill tidak ikut terbuang.
+  purgeNullItems(finalParsedData);
 
   // POST-PROCESSING: Business Rules
   await applyBusinessRules(docCode, finalParsedData);

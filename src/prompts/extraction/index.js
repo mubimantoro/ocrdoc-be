@@ -140,6 +140,17 @@ PRINSIP UNIVERSAL (berlaku untuk format apapun):
  
 TARGET SCHEMA PER ITEM:
 ${JSON.stringify(itemBlueprint)}
+
+ATURAN KRITIS — BILLING DOCUMENT vs DELIVERY NOTE:
+Dokumen ERP SAP (seperti Aesculap) memiliki DUA kolom numerik yang berbeda:
+  • "Billing Document" → nilai ~9 digit diawali 3 atau 4 (misal: 395536381)
+    INI yang WAJIB digunakan sebagai invoice_number
+  • "Delivery" / "Delivery Note" → nilai ~9 digit diawali 1 atau 7 (misal: 176977171)
+    JANGAN gunakan ini sebagai invoice_number
+Urutan kolom dari kiri: [Payer][Date][Billing Document][Delivery][Item No][...]
+Billing Document selalu ada di KIRI dari Delivery. Satu Billing Document mencakup
+ratusan baris dari berbagai Delivery Notes. Pastikan semua baris dalam satu
+Billing Document yang sama menggunakan invoice_number yang SAMA.
  
 ATURAN OUTPUT:
 1. OUTPUT HANYA JSON array. Buka dengan "[" dan tutup dengan "]".
