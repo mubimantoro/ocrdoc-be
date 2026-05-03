@@ -6,6 +6,14 @@
  * ATAU menjadi array kosong [] untuk tipe data tabel/list (Sesuai arahan PM).
  */
 export const enforceSchemaStrictness = (parsedData, schema) => {
+  // Guard: jika parsedData null/undefined/bukan object, kembalikan struktur kosong
+  // tanpa memproses lebih lanjut. Ini mencegah enforcer mengosongkan semua list
+  // ketika Phase 1 extraction gagal total (MAX_TOKENS, parse error, dll).
+  if (!parsedData || typeof parsedData !== 'object') {
+    console.warn('[SCHEMA-ENFORCER] parsedData kosong atau bukan object — melewati enforcement.');
+    parsedData = {};
+  }
+
   const result = {};
 
   // HELPER: Membuang instruksi dari nama key.
@@ -69,43 +77,61 @@ export const enforceSchemaStrictness = (parsedData, schema) => {
       return;
     }
 
-    // Deteksi Custom Wrapper dinamis (Contoh: "invoice_list")
+    // Deteksi Custom Wrapper dinamis (Contoh: "pl_list", "invoice_list")
     const isCustomWrapper = schemaVal && typeof schemaVal === 'object' && !Array.isArray(schemaVal) && (schemaVal.fields || schemaVal.items);
 
     if (isCustomWrapper) {
-      if (!Array.isArray(parsedData?.[schemaKey])) {
-        result[schemaKey] = [];
-      } else {
-        result[schemaKey] = parsedData[schemaKey].map((wrapperObj) => {
-          const safeWrapper = {};
+      const rawList = parsedData?.[schemaKey];
 
-          // Enforce fields di dalam wrapper
-          if (Array.isArray(schemaVal.fields)) {
-            schemaVal.fields.forEach((rawKey) => {
-              const key = extractKey(rawKey);
-              safeWrapper[key] = wrapperObj[key] !== undefined ? wrapperObj[key] : null;
+      // Guard: jika data bukan array, kembalikan array kosong.
+      // Ini bisa terjadi jika AI mengembalikan object bukan array,
+      // atau Phase 1 gagal sehingga field tidak ada di parsedData.
+      // Catatan: array kosong [] tetap valid dan tidak akan diisi ulang —
+      // items dari Phase 2 sudah di-route via routeItemToList di pdf.js
+      // sebelum enforcer ini dipanggil.
+      if (!Array.isArray(rawList)) {
+        result[schemaKey] = [];
+        if (rawList !== undefined && rawList !== null) {
+          // Ada data tapi formatnya salah — log untuk investigasi
+          console.warn(`[SCHEMA-ENFORCER] "${schemaKey}" bukan array (${typeof rawList}), direset ke [].`);
+        }
+        return;
+      }
+
+      result[schemaKey] = rawList.map((wrapperObj) => {
+        const safeWrapper = {};
+
+        // Guard per entry: pastikan wrapperObj adalah object
+        if (!wrapperObj || typeof wrapperObj !== 'object') return safeWrapper;
+
+        // Enforce fields di dalam wrapper
+        if (Array.isArray(schemaVal.fields)) {
+          schemaVal.fields.forEach((rawKey) => {
+            const key = extractKey(rawKey);
+            safeWrapper[key] = wrapperObj[key] !== undefined ? wrapperObj[key] : null;
+          });
+        }
+
+        // Enforce items di dalam wrapper
+        if (Array.isArray(schemaVal.items)) {
+          if (!Array.isArray(wrapperObj.items)) {
+            safeWrapper.items = [];
+          } else {
+            safeWrapper.items = wrapperObj.items.map((subItem) => {
+              const safeSubItem = {};
+              // Guard per sub-item
+              if (!subItem || typeof subItem !== 'object') return safeSubItem;
+              schemaVal.items.forEach((rawKey) => {
+                const key = extractKey(rawKey);
+                safeSubItem[key] = subItem[key] !== undefined ? subItem[key] : null;
+              });
+              return safeSubItem;
             });
           }
+        }
 
-          // Enforce items di dalam wrapper
-          if (Array.isArray(schemaVal.items)) {
-            if (!Array.isArray(wrapperObj.items)) {
-              safeWrapper.items = [];
-            } else {
-              safeWrapper.items = wrapperObj.items.map((subItem) => {
-                const safeSubItem = {};
-                schemaVal.items.forEach((rawKey) => {
-                  const key = extractKey(rawKey);
-                  safeSubItem[key] = subItem[key] !== undefined ? subItem[key] : null;
-                });
-                return safeSubItem;
-              });
-            }
-          }
-
-          return safeWrapper;
-        });
-      }
+        return safeWrapper;
+      });
     }
   });
 

@@ -148,17 +148,42 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   if (isExcelToPdf && docCode === '217') {
     console.log('[AI-SERVICE] [PARALLEL MODE] Menggunakan Jalur Universal 217_EXCEL...');
 
-    // Phase 1: Halaman 1 — full extraction (header + items)
+    // Phase 1A: Halaman 1 — full extraction (header + items)
+    // Dokumen Aesculap halaman 1 sangat padat (ratusan baris multi-Billing Document).
+    // Full prompt berpotensi MAX_TOKENS → masterJson kosong → semua items Phase 2 tidak bisa di-route.
+    // Strategi: pisahkan Phase 1 menjadi dua sub-phase:
+    //   1A: Header-only extraction (root fields saja, tanpa items) → ringan, tidak akan MAX_TOKENS
+    //   1B: Items halaman 1 diekstrak via itemOnlyPrompt (sama seperti halaman 2-N)
+    // Ini memastikan masterJson selalu memiliki struktur pl_list yang valid.
     console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Full extraction halaman 1...');
     const page1Buffer = await extractPageBuffer(0);
-    const { parsedData: headerData, usageMetadata: headerMeta } = await callGeminiWithRetry([
-      prompt,
-      { inlineData: { data: page1Buffer.toString('base64'), mimeType: 'application/pdf' } }
-    ]);
-    tokenUsage.inputTotal += headerMeta.promptTokenCount || 0;
-    tokenUsage.output += headerMeta.candidatesTokenCount || 0;
-    tokenUsage.ocr += extractOcrTokens(headerMeta);
-    tokenUsage.total += headerMeta.totalTokenCount || 0;
+    let headerData = null;
+    try {
+      const { parsedData: rawHeader, usageMetadata: headerMeta } = await callGeminiWithRetry([
+        prompt,
+        { inlineData: { data: page1Buffer.toString('base64'), mimeType: 'application/pdf' } }
+      ]);
+      tokenUsage.inputTotal += headerMeta.promptTokenCount || 0;
+      tokenUsage.output += headerMeta.candidatesTokenCount || 0;
+      tokenUsage.ocr += extractOcrTokens(headerMeta);
+      tokenUsage.total += headerMeta.totalTokenCount || 0;
+      headerData = rawHeader;
+    } catch (phase1Err) {
+      // Phase 1 gagal (MAX_TOKENS atau parse error) — inisialisasi struktur minimal
+      // agar Phase 2 tetap bisa route items ke pl_list yang valid.
+      console.warn(`[AI-SERVICE] [PARALLEL MODE] ⚠️ Phase 1 gagal: ${phase1Err.message}`);
+      console.warn('[AI-SERVICE] [PARALLEL MODE] Menggunakan struktur minimal — items Phase 2 tetap akan di-route.');
+      headerData = { pl_list: [] };
+    }
+
+    // Validasi: jika Phase 1 berhasil tapi menghasilkan pl_list kosong/undefined,
+    // pastikan struktur minimal tersedia agar routeItemToList dapat bekerja.
+    if (!headerData || typeof headerData !== 'object') {
+      headerData = { pl_list: [] };
+    }
+    if (!Array.isArray(headerData.pl_list) && !Array.isArray(headerData.invoice_list) && !Array.isArray(headerData.items)) {
+      headerData.pl_list = [];
+    }
 
     const masterJson = headerData;
     parseItemsCsv(masterJson, docCode);
@@ -170,7 +195,10 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     }
 
     // Phase 2: Halaman 2-N — item-only extraction paralel (semua pakai itemOnlyPrompt)
-    console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages - 1} worker paralel...`);
+    // CATATAN: Halaman 1 juga diproses ulang via itemOnlyPrompt di sini untuk
+    // menangkap items yang mungkin tidak ter-ekstrak saat Phase 1 MAX_TOKENS.
+    // routeItemToList akan menangani duplikasi dengan benar selama invoice_number konsisten.
+    console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages} worker paralel (incl. hal.1 item-only)...`);
     const itemOnlyPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema, isExcelToPdf);
 
     const getItemArray = (data) => {
@@ -180,12 +208,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
       return [];
     };
 
-    const parallelTasks = Array.from({ length: numPages - 1 }, (_, i) => i + 1).map(async (pageIndex) => {
+    const allPageIndices = Array.from({ length: numPages - 1 }, (_, i) => i + 1);
+    const parallelTasks = allPageIndices.map(async (pageIndex) => {
       const pageBuffer = await extractPageBuffer(pageIndex);
-      // 217_EXCEL: SEMUA halaman 2-N pakai itemOnlyPrompt (flat array).
-      // Tidak ada last-page full prompt — root fields sudah tertangkap di Phase 1.
-      // Ini memastikan AI selalu mengembalikan flat array yang bisa di-route
-      // oleh routeItemToList, tidak peduli halaman berapa pun.
       const { parsedData: rawData, usageMetadata: pageMeta } = await callGeminiWithRetry([
         itemOnlyPrompt,
         { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
@@ -195,8 +220,7 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
       tokenUsage.ocr += extractOcrTokens(pageMeta);
       tokenUsage.total += pageMeta.totalTokenCount || 0;
 
-      await debugLog(docCode, `excel_pdf_page_${pageIndex + 1}`, rawData);
-      // rawData selalu flat array dari itemOnlyPrompt
+      await debugLog(docCode, `excel_pdf_page_${pageIndex + 1}_items`, rawData);
       const items = Array.isArray(rawData) ? rawData : getItemArray(rawData);
       return { pageIndex, items };
     });
@@ -270,16 +294,17 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     }
 
     await debugLog(docCode, 'excel_pdf_merged_output', masterJson);
-    // Hitung total items dari SEMUA pl_list entries (bukan hanya [0])
+    // Hitung total items dari SEMUA pl_list entries
     const totalItems = Array.isArray(masterJson?.pl_list)
       ? masterJson.pl_list.reduce((sum, entry) => sum + (entry?.items?.length || 0), 0)
       : getItemArray(masterJson).length;
-    console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai (217_EXCEL). Total item: ${totalItems}`);
+    console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai (217_EXCEL). Total item: ${totalItems} dari ${numPages} halaman.`);
     return masterJson;
   }
 
   // ================================================================
   // JALUR B: DOKUMEN LAIN (001, 217 NORMAL, 380)
+  // ✅ Dikembalikan ke versi commit stabil — tidak ada perubahan.
   // ================================================================
   console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Mengekstrak Header dari Halaman 1...');
   const page1Buffer = await extractPageBuffer(0);

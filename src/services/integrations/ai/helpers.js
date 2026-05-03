@@ -26,10 +26,10 @@ export const jsonToGeminiSchema = (blueprint) => {
 };
 
 /**
- * DEBUGGER KHUSUS CIPL (001)
+ * DEBUGGER — aktif untuk docCode: 001, 217, dan 'debug'
  */
 export const debugLog = async (docCode, stepName, data) => {
-  if (docCode !== '001' && docCode !== 'debug') return;
+  if (docCode !== '001' && docCode !== '217' && docCode !== 'debug') return;
   try {
     const debugDir = path.join(process.cwd(), 'debug_logs');
     await fs.mkdir(debugDir, { recursive: true });
@@ -42,7 +42,7 @@ export const debugLog = async (docCode, stepName, data) => {
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = path.join(debugDir, `cipl_${timestamp}_${stepName}.json`);
+    const filename = path.join(debugDir, `${docCode}_${timestamp}_${stepName}.json`);
     await fs.writeFile(filename, JSON.stringify(data, null, 2));
     console.log(`[DEBUG] Log tersimpan: ${filename}`);
   } catch (err) {
@@ -102,13 +102,10 @@ export const mergeArraysDeep = (master, batch) => {
           masterEntry.items.push(...batchEntry.items);
         }
 
-        // 🚀 ADAPTASI ARRAY OF STRINGS
         if (batchEntry['items_csv']) {
           if (!masterEntry['items_csv']) masterEntry['items_csv'] = [];
-
           const masterCsv = Array.isArray(masterEntry['items_csv']) ? masterEntry['items_csv'] : [masterEntry['items_csv']];
           const batchCsv = Array.isArray(batchEntry['items_csv']) ? batchEntry['items_csv'] : [batchEntry['items_csv']];
-
           masterEntry['items_csv'] = [...masterCsv, ...batchCsv];
         }
       } else {
@@ -124,6 +121,7 @@ export const mergeArraysDeep = (master, batch) => {
     }
   });
 };
+
 /**
  * THE ENTERPRISE SELF-HEALING ENGINE (Exponential Backoff + Circuit Breaker)
  */
@@ -136,11 +134,10 @@ export const callGeminiWithRetry = async (geminiContents, maxRetries = 3, forceS
       const config = {
         responseMimeType: 'application/json',
         temperature: 0.0,
-        maxOutputTokens: 20480,
+        maxOutputTokens: 40960,
         safetySettings
       };
 
-      // 🚀 THE NUCLEAR OPTION: Mengunci API Schema
       if (forceSchema) {
         config.responseSchema = forceSchema;
       }
@@ -165,12 +162,9 @@ export const callGeminiWithRetry = async (geminiContents, maxRetries = 3, forceS
       console.warn(`\n[AI-SERVICE] ⚠️ Error API (Attempt ${attempt}/${maxRetries}): ${error.message}`);
 
       if (attempt >= maxRetries) {
-        // BREAK THE CIRCUIT! Lempar error mutlak agar Worker menandainya failed.
         throw new Error(`AI API Error setelah ${maxRetries} percobaan: ${error.message}`);
       }
 
-      // EXPONENTIAL BACKOFF: Jeda tunggu bertambah lama setiap kali gagal.
-      // Jika Rate Limit, tunggu 5 detik. Jika error JSON biasa, tunggu eksponensial.
       const delayMs = (isRateLimit || isServiceUnavailable) ? 5000 : (1000 * Math.pow(2, attempt));
       console.warn(`[AI-SERVICE] 🔄 Jeda ${delayMs}ms sebelum mencoba ulang...`);
       await new Promise((res) => setTimeout(res, delayMs));
@@ -187,7 +181,6 @@ export const applyForwardFill = (data) => {
   const recursiveFill = (obj) => {
     if (Array.isArray(obj)) {
       if (obj.length > 0 && typeof obj[0] === 'object' && !obj[0].items) {
-        // Ini adalah array baris barang (flat)
         const memory = {};
         obj.forEach((row) => {
           fillableFields.forEach((field) => {
@@ -199,7 +192,6 @@ export const applyForwardFill = (data) => {
           });
         });
       } else {
-        // Rekursif ke dalam elemen array
         obj.forEach(recursiveFill);
       }
     } else if (obj !== null && typeof obj === 'object') {
@@ -247,7 +239,6 @@ export const parseItemsCsv = (data, docCode) => {
     processList(data['invoice_list'], ['number', 'prod_number', 'description', 'quantity', 'hs_code', 'uom', 'origin', 'origin_code', 'vendor_name', 'vendor_number', 'unit_price', 'amount', 'currency', 'packaging_type_item']);
     processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
   } else if (docCode === '217') {
-    // 🚀 DIKEMBALIKAN KE 13 KOLOM ABSOLUT SESUAI SCHEMA KLIEN
     processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
   }
 };

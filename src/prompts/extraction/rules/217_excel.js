@@ -135,4 +135,36 @@ BAGIAN 6: PEMETAAN FIELD ITEM
 
 FORMAT ANGKA: Number JavaScript — desimal pakai titik, tanpa pemisah ribuan.
   Contoh benar: 1234.56 | Contoh salah: 1,234.56 atau "1234.56"
+
+════════════════════════════════════════════════════════
+BAGIAN 7: IDENTIFIKASI BILLING DOCUMENT vs DELIVERY NOTE (KRITIS)
+════════════════════════════════════════════════════════
+
+Dalam dokumen ERP (terutama SAP export format seperti Aesculap), ada DUA jenis
+nomor yang sering muncul berdampingan di setiap baris:
+
+  BILLING DOCUMENT (invoice_number yang BENAR):
+  • Kolom bernama: "Billing Document", "Billing Doc", "Invoice No"
+  • Ciri nilai: 9 digit, biasanya diawali angka 3 atau 4 (contoh: 395536381, 395536380)
+  • Nilainya BERULANG untuk banyak baris — satu Billing Document mencakup banyak item
+    dari berbagai Delivery Notes berbeda
+  • INI yang harus menjadi invoice_number
+
+  DELIVERY NOTE / DELIVERY NUMBER (JANGAN dijadikan invoice_number):
+  • Kolom bernama: "Delivery", "Delivery Note", "Delivery No", "DN", "Delivery Document"
+  • Ciri nilai: 9 digit, biasanya diawali angka 1 atau 7 (contoh: 176977171, 177086683)
+  • Nilainya berubah lebih sering daripada Billing Document
+  • INI adalah sub-grouping internal, BUKAN identifier dokumen induk
+
+ATURAN MUTLAK:
+  Jika dokumen memiliki KEDUA kolom tersebut:
+  → Gunakan nilai kolom "Billing Document" sebagai invoice_number
+  → ABAIKAN nilai kolom "Delivery" / "Delivery Note" untuk invoice_number
+  → Satu Billing Document bisa mencakup RATUSAN baris dari berbagai Delivery Notes
+
+CARA IDENTIFIKASI di dokumen yang squished/tergabung:
+  Urutan kolom SAP ERP Aesculap dari kiri ke kanan umumnya:
+  [Payer] [Date] [Billing Document] [Delivery] [Item] [PO] [Sales Doc] [Material] ...
+  Billing Document selalu SEBELUM Delivery dalam urutan kolom.
+  Gunakan posisi relatif ini jika nama kolom tidak terlihat jelas.
 `;
