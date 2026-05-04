@@ -9,6 +9,7 @@ import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, debugLog, pars
 import { processExcelExtraction } from './handlers/excel.js';
 import { PDFDocument } from 'pdf-lib';
 import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtraction } from './handlers/pdf.js';
+import logger from '../../../config/logger.js';
 
 /**
  * POST-PROCESSING: Buang item ghost di mana semua field bernilai null/undefined/string kosong.
@@ -22,9 +23,8 @@ import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtr
  * AMAN untuk sub-baris batch dengan amount=0, quantity=1, net_weight=0.001
  * karena nilai 0 dan angka valid TIDAK dianggap null oleh fungsi ini.
  *
- * Dipanggil SETELAH applyForwardFill dan SEBELUM applyBusinessRules.
  */
-const purgeNullItems = (data) => {
+const purgeNullItems = (data, log) => {
   if (!data || typeof data !== 'object') return;
 
   const isNullItem = (item) =>
@@ -37,7 +37,7 @@ const purgeNullItems = (data) => {
     if (!Array.isArray(arr)) return;
     for (let i = arr.length - 1; i >= 0; i--) {
       if (isNullItem(arr[i])) {
-        console.log(`[AI-SERVICE] [PURGE] Item all-null di index ${i} dibuang.`);
+        log.debug({ event: 'null_item_purged', index: i }, `Item all-null di index ${i} dibuang`);
         arr.splice(i, 1);
       }
     }
@@ -62,11 +62,11 @@ const __dirname = path.dirname(__filename);
  * FASE 2 - Ekstraksi Data Spesifik (Smart Data Extraction)
  * Arsitektur Master: Omni-Channel Map Reduce (PDF & Excel) + Self-Healing
  */
-export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName = null, isExcelToPdf = false) => {
+export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName = null, isExcelToPdf = false, log = logger) => {
   const tokenUsage = { inputTotal: 0, inputText: 0, ocr: 0, output: 0, total: 0 };
 
   // ==============================================================
-  // 🚀 MULAI EKSTRAKSI
+  // MULAI EKSTRAKSI
   // ==============================================================
   let jsonSchema;
   try {
@@ -84,9 +84,9 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   const isPdf = mimeType === 'application/pdf';
 
   if (isExcel) {
-    finalParsedData = await processExcelExtraction(fileBuffer, sheetName, prompt, tokenUsage);
+    finalParsedData = await processExcelExtraction(fileBuffer, sheetName, prompt, tokenUsage, log);
   } else if (isPdf) {
-    // 🔍 PENGECEKAN KOMPLEKSITAS SKEMA
+    // PENGECEKAN KOMPLEKSITAS SKEMA
     const hasItemList = Object.values(jsonSchema).some((val) => {
       if (Array.isArray(val)) return true;
       if (val && typeof val === 'object' && Array.isArray(val.items)) return true;
@@ -99,7 +99,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     const numPagesPdf = pdfDocCheck.getPageCount();
 
 
-    // 🚀 217_EXCEL selalu masuk ke Parallel (karena logika 14-kolom ada di sana)
+    // 217_EXCEL selalu masuk ke Parallel (karena logika 14-kolom ada di sana)
     const isSpecialExcelPdf = isExcelToPdf && docCode === '217';
 
     // Dokumen dianggap "berat" jika punya item list DAN > 5 halaman.
@@ -108,50 +108,62 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
 
     const isShortInvoice = docCode === '380' && hasItemList && numPagesPdf <= 5;
 
-
-
     const forceParallel = isHeavyDocument || isSpecialExcelPdf;
 
-    console.log(`[AI-SERVICE] Routing Check -> docCode: ${docCode}, hasItemList: ${hasItemList}, numPages: ${numPagesPdf}, isHeavy: ${isHeavyDocument}, isShortInvoice: ${isShortInvoice}`);
-
+    log.debug({
+      event: 'routing_decision',
+      docCode,
+      hasItemList,
+      numPages: numPagesPdf,
+      isHeavyDocument,
+      isShortInvoice,
+      forceParallel,
+      isSpecialExcelPdf,
+    }, 'Routing check selesai');
 
     if (isLightSchema) {
-      // ⚡ Strategi 1: Light Mode
-      finalParsedData = await processLightPdfExtraction(fileBuffer, prompt, tokenUsage);
+      // Strategi 1: Light Mode
+      finalParsedData = await processLightPdfExtraction(fileBuffer, prompt, tokenUsage, log);
       const hasNumber = finalParsedData?.doc_number || finalParsedData?.ls_number;
       const isConfident = (finalParsedData?.confidence_score || 0) >= 0.6;
 
       if (!hasNumber || !isConfident) {
-        console.warn('[AI-SERVICE] Hasil Light Mode kurang memuaskan. Fallback ke Full Extraction...');
-        finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
+        log.warn({
+          event: 'light_mode_fallback',
+          docCode,
+          hasNumber: !!hasNumber,
+          confidenceScore: finalParsedData?.confidence_score ?? null,
+        }, 'Light Mode kurang memuaskan, fallback ke Full Extraction');
+        finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage, log);
       }
     } else if (isShortInvoice) {
-      // ⚡ Strategi 2: One-Shot untuk Invoice (380) pendek (≤ 5 halaman)
-      // Mengirim seluruh PDF sekaligus agar AI mendapat konteks penuh —
+      // Strategi 2: One-Shot untuk Invoice (380) pendek (≤ 5 halaman)
+      // Mengirim seluruh PDF sekaligus agar AI mendapat konteks penuh
       // menghindari kegagalan Sequential mode pada format vendor dengan banyak halaman non-item.
-      console.log(`\n[AI-SERVICE] [ONE-SHOT MODE] Invoice 380 pendek (${numPagesPdf} hal) — Full Context Extraction...`);
+      log.info({ event: 'one_shot_extraction', docCode, numPages: numPagesPdf },
+        `One-Shot mode: Invoice 380 (${numPagesPdf} hal)`);
       const { parsedData: oneShotJson, usageMetadata } = await callGeminiWithRetry([
         prompt,
         { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
-      ]);
+      ], 3, null, log);
       tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
       tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
       tokenUsage.ocr += extractOcrTokens(usageMetadata);
       tokenUsage.total += usageMetadata.totalTokenCount || 0;
       finalParsedData = oneShotJson;
     } else if (forceParallel) {
-      // 🚀 Strategi 3: Parallel mode untuk dokumen berat atau 217_EXCEL
-      finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf);
+      // Strategi 3: Parallel mode untuk dokumen berat atau 217_EXCEL
+      finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf, log);
     } else {
-      // 📄 Strategi 4: Sequential mode untuk dokumen non-heavy lainnya
-      finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
+      // Strategi 4: Sequential mode untuk dokumen non-heavy lainnya
+      finalParsedData = await processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage, log);
     }
   } else {
-    // 🖼️ IMAGE PROCESSING
+    // IMAGE PROCESSING
     const { parsedData: imgJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: mimeType } }
-    ]);
+    ], 3, null, log);
     finalParsedData = imgJson;
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
     tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
@@ -162,14 +174,16 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   tokenUsage.inputText = Math.max(0, tokenUsage.inputTotal - tokenUsage.ocr);
 
   // POST-PROCESSING: Reasoning Cleanup
-  if (finalParsedData && finalParsedData._reasoning) console.log(`[AI-SERVICE] AI Reasoning: ${finalParsedData._reasoning}`);
+  if (finalParsedData?._reasoning) {
+    log.debug({ event: 'ai_reasoning', docCode, reasoning: finalParsedData._reasoning }, 'AI reasoning captured');
+  }
   if (Array.isArray(finalParsedData)) {
     finalParsedData.forEach((item) => delete item._reasoning);
   } else if (finalParsedData && typeof finalParsedData === 'object') {
     delete finalParsedData._reasoning;
   }
 
-  // 🛡️ ZERO-REGRESSION: Kembalikan fungsi parseItemsCsv agar dokumen PDF berhalaman sedikit (Sequential) tetap ter-parsing!
+  // ZERO-REGRESSION: Kembalikan fungsi parseItemsCsv agar dokumen PDF berhalaman sedikit (Sequential) tetap ter-parsing!
   if (docCode === '217' || docCode === '001') {
     // Catatan: Untuk 217_EXCEL, data sudah dalam bentuk objek dari pdf.js (Phase 3 stitching),
     // fungsi parseItemsCsv dirancang aman (idempotent) karena ia hanya mem-parsing properti 'items_csv'.
@@ -183,7 +197,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   // POST-PROCESSING: Buang item ghost (semua field null)
   // Dipanggil setelah forwardFill agar item yang sebelumnya kosong
   // tapi sudah diisi via forward-fill tidak ikut terbuang.
-  purgeNullItems(finalParsedData);
+  purgeNullItems(finalParsedData, log);
 
   // POST-PROCESSING: Business Rules
   await applyBusinessRules(docCode, finalParsedData);

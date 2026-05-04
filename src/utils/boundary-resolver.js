@@ -16,7 +16,7 @@ export const buildDocumentsFromPages = (allTaggedPages) => {
     if (!currentDoc) {
       forceNewDoc = true;
     } else {
-      // 🚀 PENANGANAN TIPE DATA AMAN (Mencegah Crash jika AI return tipe Integer)
+      // PENANGANAN TIPE DATA AMAN (Mencegah Crash jika AI return tipe Integer)
       const docNum1 = currentDoc.document_number ? String(currentDoc.document_number).trim().toLowerCase() : null;
       const docNum2 = page.document_number ? String(page.document_number).trim().toLowerCase() : null;
 

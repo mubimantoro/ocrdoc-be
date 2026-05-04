@@ -22,6 +22,7 @@ import { processPdfBoundary } from './handlers/pdf-boundary.js';
 import { processImageBoundary } from './handlers/image-boundary.js';
 import { loadMasterPdf, splitAndUploadPdf, uploadNonPdfFile } from './handlers/pdf-splitter.js';
 import { convertExcelToPdf } from '../services/integrations/gotenberg.js';
+import logger from '../config/logger.js';
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -37,10 +38,12 @@ export const boundaryQueue = new Queue('boundary-jobs', { connection });
 // dan delegasi logika ke handler yang tepat.
 // ==============================================================
 export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
-  console.log('\n===========================================');
-  console.log(`[BOUNDARY WORKER] Job ID: ${job.id} | Dimulai`);
+  const log = logger.child({
+    jobId: job.id,
+    sourceFileId: job.data.sourceFileId,
+    module: 'boundary-worker',
+  });
 
-  // Kita gunakan 'let' pada absoluteFilePath dan mimeType agar bisa diubah.
   let { sourceFileId, absoluteFilePath, fileName, mimeType, manualDocType } = job.data;
   const startTime = new Date();
 
@@ -55,11 +58,11 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     //  GOTENBERG
     // ==============================================================
     if (isExcel) {
-      console.log('[BOUNDARY WORKER] Menerima Excel. Memulai sanitasi Hidden Sheets...');
+      log.info({ event: 'excel_conversion_start', fileName }, 'Excel diterima — konversi ke PDF via Gotenberg');
 
       const rawExcelBuffer = await fs.readFile(absoluteFilePath);
 
-      const pdfBuffer = await convertExcelToPdf(rawExcelBuffer, fileName);
+      const pdfBuffer = await convertExcelToPdf(rawExcelBuffer, fileName, log);
 
       const parsedPath = path.parse(absoluteFilePath);
       const newPdfPath = path.join(parsedPath.dir, `${parsedPath.name}_converted.pdf`);
@@ -70,8 +73,11 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       mimeType = 'application/pdf';
       isExcel = false;
 
-      console.log(`[BOUNDARY WORKER] PDF URL: /${path.basename(newPdfPath)}`);
-      console.log('[BOUNDARY WORKER] Excel kini diperlakukan sebagai PDF.');
+      log.info({
+        event: 'excel_conversion_completed',
+        fileName,
+        convertedPath: path.basename(newPdfPath),
+      }, 'Excel berhasil dikonversi ke PDF');
     }
 
     // Identifikasi ulang mimeType setelah proses (mungkin) konversi
@@ -85,14 +91,15 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     let fileBuffer;
 
     if (wasOriginallyExcel) {
-      console.log('[BOUNDARY WORKER] Mode: Excel');
+      log.info({ event: 'segmentation_mode', mode: 'excel_bypass', manualDocType }, 'Mode: Excel — bypass segmentasi AI');
+
 
       if (!manualDocType) {
         throw new Error('VALIDATION_ERROR: Doc Type WAJIB dikirim untuk memproses dokumen Excel.');
       }
 
       // Kita hitung total halamannya menggunakan utilitas yang sudah Anda punya
-      const loadedPdf = await loadMasterPdf(absoluteFilePath);
+      const loadedPdf = await loadMasterPdf(absoluteFilePath, log);
       const totalPdfPages = loadedPdf.totalPages;
 
       segmentationResult = {
@@ -108,10 +115,12 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       };
 
     } else if (isPdf) {
-      console.log('[BOUNDARY WORKER] Mode: PDF');
-      segmentationResult = await processPdfBoundary(absoluteFilePath, mimeType, manualDocType);
+      log.info({ event: 'segmentation_mode', mode: 'pdf' }, 'Mode: PDF — deteksi boundary via AI');
+
+      segmentationResult = await processPdfBoundary(absoluteFilePath, mimeType, manualDocType, log);
     } else if (isImage) {
-      console.log('[BOUNDARY WORKER] Mode: Image');
+      log.info({ event: 'segmentation_mode', mode: 'image' }, 'Mode: Image — deteksi boundary via AI');
+
       fileBuffer = await fs.readFile(absoluteFilePath);
       segmentationResult = await processImageBoundary(fileBuffer, mimeType, manualDocType);
     } else {
@@ -137,7 +146,11 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       modelUsed
     });
 
-    console.log(`[BOUNDARY WORKER] Ditemukan ${documents.length} sub-dokumen.`);
+    log.info({
+      event: 'segmentation_completed',
+      documentCount: documents.length,
+      modelUsed,
+    }, `Ditemukan ${documents.length} sub-dokumen`);
 
     if (documents.length === 0) {
       const typeMsg = manualDocType ? `tipe '${manualDocType}'` : 'dokumen yang valid';
@@ -152,7 +165,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     let totalPages = 1;
 
     if (isPdf) {
-      const loaded = await loadMasterPdf(absoluteFilePath);
+      const loaded = await loadMasterPdf(absoluteFilePath, log);
       masterPdfBuffer = loaded.buffer;
       masterPdfDoc = loaded.doc;
       totalPages = loaded.totalPages;
@@ -165,6 +178,8 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
 
     for (let i = 0; i < documents.length; i += BATCH_SIZE) {
       const batchDocs = documents.slice(i, i + BATCH_SIZE);
+      const batchEnd = Math.min(i + BATCH_SIZE, documents.length);
+
 
       await Promise.all(batchDocs.map(async (doc) => {
         // A. Tulis ke Database
@@ -182,9 +197,9 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
         // B. Split & Upload File
         let splitFilePath;
         if (isPdf) {
-          splitFilePath = await splitAndUploadPdf(doc, docRecord.id, masterPdfBuffer, masterPdfDoc, totalPages, mimeType);
+          splitFilePath = await splitAndUploadPdf(doc, docRecord.id, masterPdfBuffer, masterPdfDoc, totalPages, mimeType, log);
         } else {
-          splitFilePath = await uploadNonPdfFile(fileBuffer, docRecord.id, mimeType);
+          splitFilePath = await uploadNonPdfFile(fileBuffer, docRecord.id, mimeType, log);
         }
 
         // C. Dispatch ke Extraction Queue
@@ -195,7 +210,7 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
           documentId: docRecord.id,
           sourceFileId,
           splitFilePath,
-          docCode: doc.doc_code, // 🚨 Dokumen ini sekarang akan di-ekstrak layaknya PDF.
+          docCode: doc.doc_code,
           mimeType,
           sheetName: doc.sheetName ?? null,
           isExcelToPdf: wasOriginallyExcel
@@ -206,9 +221,22 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
         });
 
         await ExtractionJobRepositories.updateBullmqId(jobTracking.id, extractJob.id);
+
+        log.debug({
+          event: 'document_dispatched',
+          documentId: docRecord.id,
+          docCode: doc.doc_code,
+          extractJobId: extractJob.id,
+          pages: `${doc.start_page}-${doc.end_page}`,
+        }, `Dokumen ${doc.doc_code} didispatch ke extraction queue`);
       }));
 
-      console.log(`[BOUNDARY WORKER] Batch ${i + 1}-${Math.min(i + BATCH_SIZE, documents.length)} selesai.`);
+      log.info({
+        event: 'batch_completed',
+        batchStart: i + 1,
+        batchEnd,
+        totalDocuments: documents.length,
+      }, `Batch ${i + 1}-${batchEnd} selesai`);
     }
 
     // -------------------------------------------------------
@@ -216,13 +244,17 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
     // -------------------------------------------------------
     masterPdfDoc = null;
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'processing', progress: 10 });
-    console.log(`[BOUNDARY WORKER] Job ID: ${job.id} | SELESAI`);
-    console.log('===========================================\n');
+
+    log.info({ event: 'job_completed' }, 'Boundary job selesai');
 
     return { status: 'success', sourceFileId };
 
   } catch (error) {
-    console.error(`\n[BOUNDARY WORKER] FATAL ERROR pada Job ${job.id}:`, error.message);
+    log.error({
+      event: 'job_failed',
+      err: error,
+    }, `Boundary job gagal: ${error.message}`);
+
     await SourceFileRepositories.updateStatus(sourceFileId, 'failed', error.message);
     socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'failed' });
     throw error;

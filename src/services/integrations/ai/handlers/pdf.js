@@ -4,20 +4,23 @@
 import { PDFDocument } from 'pdf-lib';
 import { getSequentialExtractionPrompt, getItemOnlyExtractionPrompt } from '../../../../prompts/extraction/index.js';
 import { callGeminiWithRetry, mergeArraysDeep, extractOcrTokens, debugLog, parseItemsCsv } from '../helpers.js';
+import logger from '../../../../config/logger.js';
 
 /**
  * HANDLER: PDF EXTRACTION (One-Shot vs Sequential)
  */
-export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsage) => {
+export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsage, log = logger) => {
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
   if (pdfDoc.isEncrypted) {
-    console.log(`\n[AI-SERVICE] [PDF MODE] Secured PDF Terdeteksi! Memaksa mode ONE-SHOT Bypass (${numPages} hal)...`);
+    log.warn({ event: 'secured_pdf_detected', docCode, numPages }, 'Secured PDF — One-Shot Bypass');
+
     const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
-    ]);
+    ], 3, null, log);
+
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0; tokenUsage.output += usageMetadata.candidatesTokenCount || 0; tokenUsage.ocr += extractOcrTokens(usageMetadata); tokenUsage.total += usageMetadata.totalTokenCount || 0;
     await debugLog(docCode, 'one_shot_secured_pdf_output', pdfJson);
     return pdfJson;
@@ -26,21 +29,24 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
   // OPTIMIZATION 1: SAFE ONE-SHOT (UP TO 8 PAGES)
   // Threshold diturunkan dari 15 ke 8 hal untuk mencegah JSON Truncation pada data yang sangat padat.
   if (docCode === '001' && numPages <= 8) {
-    console.log(`\n[AI-SERVICE] [PDF MODE] Safe One-Shot untuk CIPL ${numPages} halaman (Akurasi Maksimal)...`);
+    log.info({ event: 'one_shot_safe', docCode, numPages }, `One-Shot Safe: CIPL ${numPages} halaman`);
+
     const { parsedData: pdfJson, usageMetadata } = await callGeminiWithRetry([
       prompt,
       { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }
-    ]);
+    ], 3, null, log);
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0; tokenUsage.output += usageMetadata.candidatesTokenCount || 0; tokenUsage.ocr += extractOcrTokens(usageMetadata); tokenUsage.total += usageMetadata.totalTokenCount || 0;
     await debugLog(docCode, 'one_shot_pdf_output', pdfJson);
     return pdfJson;
   }
 
   // OPTIMIZATION 2: CONTEXT-AWARE SEQUENTIAL EXTRACTION (> 8 PAGES)
-  console.log(`\n[AI-SERVICE] [PDF MODE] Menerapkan Context-Aware Sequential Extraction (${numPages} hal)...`);
+  log.info({ event: 'sequential_extraction_start', docCode, numPages }, `Sequential Extraction: ${numPages} halaman`);
+
   let masterJson = null;
   for (let i = 0; i < numPages; i++) {
-    console.log(`[AI-SERVICE] Memproses PDF Halaman ${i + 1}/${numPages}...`);
+    log.debug({ event: 'page_processing', docCode, page: i + 1, totalPages: numPages }, `Memproses halaman ${i + 1}/${numPages}`);
+
     const singlePdf = await PDFDocument.create();
     const [copiedPage] = await singlePdf.copyPages(pdfDoc, [i]);
     singlePdf.addPage(copiedPage);
@@ -55,7 +61,7 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
     const { parsedData: pageJson, usageMetadata } = await callGeminiWithRetry([
       pagePrompt,
       { inlineData: { data: Buffer.from(singlePdfBytes).toString('base64'), mimeType: 'application/pdf' } }
-    ]);
+    ], 3, null, log);
 
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0; tokenUsage.output += usageMetadata.candidatesTokenCount || 0; tokenUsage.ocr += extractOcrTokens(usageMetadata); tokenUsage.total += usageMetadata.totalTokenCount || 0;
     await debugLog(docCode, `raw_pdf_page_${i + 1}`, pageJson);
@@ -72,16 +78,18 @@ export const processPdfExtraction = async (fileBuffer, docCode, prompt, tokenUsa
  * Dioptimalkan untuk dokumen perizinan/regulasi (BPOM, AKL, POSTEL, dll)
  * yang hanya butuh doc_number & doc_date.
  */
-export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) => {
+export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage, log = logger) => {
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
-  console.log('\n[AI-SERVICE] [LIGHT PDF MODE] Mencoba Ekstraksi Cepat (Halaman 1 & Terakhir)...');
+  log.info({ event: 'light_extraction_start', numPages }, 'Light PDF: Ekstraksi halaman 1 & terakhir');
+
 
   // Jika Secured, One-Shot Bypass
   if (pdfDoc.isEncrypted) {
-    console.log('[AI-SERVICE] Secured PDF. Bypass ke One-Shot...');
-    const { parsedData, usageMetadata } = await callGeminiWithRetry([prompt, { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }]);
+    log.warn({ event: 'secured_pdf_light_bypass' }, 'Light PDF: Secured PDF — bypass ke One-Shot');
+
+    const { parsedData, usageMetadata } = await callGeminiWithRetry([prompt, { inlineData: { data: fileBuffer.toString('base64'), mimeType: 'application/pdf' } }], 3, null, log);
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0; tokenUsage.output += usageMetadata.candidatesTokenCount || 0; tokenUsage.ocr += extractOcrTokens(usageMetadata); tokenUsage.total += usageMetadata.totalTokenCount || 0;
     return parsedData;
   }
@@ -96,7 +104,7 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
   const { parsedData, usageMetadata } = await callGeminiWithRetry([
     prompt,
     { inlineData: { data: Buffer.from(lightPdfBytes).toString('base64'), mimeType: 'application/pdf' } }
-  ]);
+  ], 3, null, log);
 
   tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
   tokenUsage.output += usageMetadata.candidatesTokenCount || 0;
@@ -115,19 +123,19 @@ export const processLightPdfExtraction = async (fileBuffer, prompt, tokenUsage) 
  *   Phase 3: Heuristic Reconciliation pada item di batas halaman
  *   Phase 4: Merge semua hasil ke satu JSON
  *
- * 🆕 Jalur A (isExcelToPdf=true, docCode='217'): Universal extraction — AI memahami format vendor secara mandiri.
- * ✅ Jalur B (default): Logika heuristic boundary reconciliation — sama persis seperti commit stabil.
+ * Jalur A (isExcelToPdf=true, docCode='217'): Universal extraction — AI memahami format vendor secara mandiri.
+ * Jalur B (default): Logika heuristic boundary reconciliation
  */
-export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf = false) => {
+export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf = false, log = logger) => {
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const numPages = pdfDoc.getPageCount();
 
   if (pdfDoc.isEncrypted) {
-    console.warn('[AI-SERVICE] [PARALLEL MODE] Secured PDF tidak bisa diproses paralel. Mengalihkan ke One-Shot...');
+    log.warn({ event: 'secured_pdf_parallel_bypass', docCode }, 'Parallel Mode: Secured PDF — dialihkan ke One-Shot');
     return processPdfExtraction(fileBuffer, docCode, prompt, tokenUsage);
   }
 
-  console.log(`\n[AI-SERVICE] [PARALLEL MODE] Memulai Parallel Extraction untuk ${numPages} halaman...`);
+  log.info({ event: 'parallel_extraction_start', docCode, numPages, isExcelToPdf }, `Parallel Extraction dimulai: ${numPages} halaman`);
 
   // Helper: Potong satu halaman menjadi PDF buffer
   const extractPageBuffer = async (pageIndex) => {
@@ -146,23 +154,23 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   // yang sudah dirancang universal di getItemOnlyExtractionPrompt.
   // ================================================================
   if (isExcelToPdf && docCode === '217') {
-    console.log('[AI-SERVICE] [PARALLEL MODE] Menggunakan Jalur Universal 217_EXCEL...');
+    log.info({ event: 'jalur_a_start', docCode }, 'Menggunakan Jalur A: 217_EXCEL Universal');
 
     // Phase 1A: Halaman 1 — full extraction (header + items)
-    // Dokumen Aesculap halaman 1 sangat padat (ratusan baris multi-Billing Document).
     // Full prompt berpotensi MAX_TOKENS → masterJson kosong → semua items Phase 2 tidak bisa di-route.
     // Strategi: pisahkan Phase 1 menjadi dua sub-phase:
     //   1A: Header-only extraction (root fields saja, tanpa items) → ringan, tidak akan MAX_TOKENS
     //   1B: Items halaman 1 diekstrak via itemOnlyPrompt (sama seperti halaman 2-N)
     // Ini memastikan masterJson selalu memiliki struktur pl_list yang valid.
-    console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Full extraction halaman 1...');
+    log.debug({ event: 'phase1_start', docCode }, 'Phase 1: Full extraction halaman 1');
+
     const page1Buffer = await extractPageBuffer(0);
     let headerData = null;
     try {
       const { parsedData: rawHeader, usageMetadata: headerMeta } = await callGeminiWithRetry([
         prompt,
         { inlineData: { data: page1Buffer.toString('base64'), mimeType: 'application/pdf' } }
-      ]);
+      ], 3, null, log);
       tokenUsage.inputTotal += headerMeta.promptTokenCount || 0;
       tokenUsage.output += headerMeta.candidatesTokenCount || 0;
       tokenUsage.ocr += extractOcrTokens(headerMeta);
@@ -171,8 +179,8 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     } catch (phase1Err) {
       // Phase 1 gagal (MAX_TOKENS atau parse error) — inisialisasi struktur minimal
       // agar Phase 2 tetap bisa route items ke pl_list yang valid.
-      console.warn(`[AI-SERVICE] [PARALLEL MODE] ⚠️ Phase 1 gagal: ${phase1Err.message}`);
-      console.warn('[AI-SERVICE] [PARALLEL MODE] Menggunakan struktur minimal — items Phase 2 tetap akan di-route.');
+      log.warn({ event: 'phase1_failed', docCode, err: phase1Err }, 'Phase 1 gagal — struktur minimal digunakan');
+
       headerData = { pl_list: [] };
     }
 
@@ -190,7 +198,8 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     await debugLog(docCode, 'excel_pdf_page_1', masterJson);
 
     if (numPages === 1) {
-      console.log('[AI-SERVICE] [PARALLEL MODE] ✅ Selesai (217_EXCEL single-page).');
+      log.info({ event: 'jalur_a_completed', docCode, singlePage: true }, '217_EXCEL single-page selesai');
+
       return masterJson;
     }
 
@@ -198,7 +207,6 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     // CATATAN: Halaman 1 juga diproses ulang via itemOnlyPrompt di sini untuk
     // menangkap items yang mungkin tidak ter-ekstrak saat Phase 1 MAX_TOKENS.
     // routeItemToList akan menangani duplikasi dengan benar selama invoice_number konsisten.
-    console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages} worker paralel (incl. hal.1 item-only)...`);
     const itemOnlyPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema, isExcelToPdf);
 
     const getItemArray = (data) => {
@@ -209,12 +217,16 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     };
 
     const allPageIndices = Array.from({ length: numPages - 1 }, (_, i) => i + 1);
+
+    log.debug({ event: 'phase2_start', docCode, workerCount: allPageIndices.length }, `Phase 2: ${allPageIndices.length} worker paralel`);
+
+
     const parallelTasks = allPageIndices.map(async (pageIndex) => {
       const pageBuffer = await extractPageBuffer(pageIndex);
       const { parsedData: rawData, usageMetadata: pageMeta } = await callGeminiWithRetry([
         itemOnlyPrompt,
         { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
-      ]);
+      ], 3, null, log);
       tokenUsage.inputTotal += pageMeta.promptTokenCount || 0;
       tokenUsage.output += pageMeta.candidatesTokenCount || 0;
       tokenUsage.ocr += extractOcrTokens(pageMeta);
@@ -227,7 +239,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
 
     const parallelResults = await Promise.all(parallelTasks);
     parallelResults.sort((a, b) => a.pageIndex - b.pageIndex);
-    console.log(`[AI-SERVICE] [PARALLEL MODE] Semua ${parallelResults.length} worker selesai.`);
+
+    log.debug({ event: 'phase2_completed', docCode, workerCount: parallelResults.length }, 'Semua worker Phase 2 selesai');
+
 
     // Phase 3: Merge hasil ke masterJson dengan grouping by invoice_number
     //
@@ -298,20 +312,22 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     const totalItems = Array.isArray(masterJson?.pl_list)
       ? masterJson.pl_list.reduce((sum, entry) => sum + (entry?.items?.length || 0), 0)
       : getItemArray(masterJson).length;
-    console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai (217_EXCEL). Total item: ${totalItems} dari ${numPages} halaman.`);
+
+    log.info({ event: 'jalur_a_completed', docCode, totalItems, numPages }, `217_EXCEL selesai: ${totalItems} items dari ${numPages} halaman`);
+
     return masterJson;
   }
 
   // ================================================================
   // JALUR B: DOKUMEN LAIN (001, 217 NORMAL, 380)
-  // ✅ Dikembalikan ke versi commit stabil — tidak ada perubahan.
   // ================================================================
-  console.log('[AI-SERVICE] [PARALLEL MODE] Phase 1: Mengekstrak Header dari Halaman 1...');
+  log.debug({ event: 'jalur_b_phase1_start', docCode }, 'Jalur B Phase 1: Header halaman 1');
+
   const page1Buffer = await extractPageBuffer(0);
   const { parsedData: headerData, usageMetadata: headerMeta } = await callGeminiWithRetry([
     prompt,
     { inlineData: { data: page1Buffer.toString('base64'), mimeType: 'application/pdf' } }
-  ]);
+  ], 3, null, log);
   tokenUsage.inputTotal += headerMeta.promptTokenCount || 0;
   tokenUsage.output += headerMeta.candidatesTokenCount || 0;
   tokenUsage.ocr += extractOcrTokens(headerMeta);
@@ -333,7 +349,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
   //   - Halaman TENGAH (2 s/d N-1): Item-Only Prompt (Cepat & Hemat Token)
   //   - Halaman TERAKHIR (N)       : Full Prompt (Tangkap Total, Tanda Tangan, Footer)
   // ================================================================
-  console.log(`[AI-SERVICE] [PARALLEL MODE] Phase 2: Meluncurkan ${numPages - 1} worker paralel...`);
+  log.debug({ event: 'jalur_b_phase2_start', docCode, workerCount: numPages - 1 }, `Jalur B Phase 2: ${numPages - 1} worker paralel`);
+
+
   const itemOnlyPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema);
 
   // Helper & Konstanta dideklarasikan DI SINI agar tersedia saat
@@ -364,7 +382,7 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     const { parsedData: rawData, usageMetadata: pageMeta } = await callGeminiWithRetry([
       selectedPrompt,
       { inlineData: { data: pageBuffer.toString('base64'), mimeType: 'application/pdf' } }
-    ]);
+    ], 3, null, log);
 
     tokenUsage.inputTotal += pageMeta.promptTokenCount || 0;
     tokenUsage.output += pageMeta.candidatesTokenCount || 0;
@@ -383,7 +401,8 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
 
   const parallelResults = await Promise.all(parallelTasks);
   parallelResults.sort((a, b) => a.pageIndex - b.pageIndex);
-  console.log(`[AI-SERVICE] [PARALLEL MODE] Semua ${parallelResults.length} worker selesai.`);
+
+  log.debug({ event: 'phase2_completed', docCode, workerCount: parallelResults.length }, 'Semua worker Phase 2 selesai');
 
   // ================================================================
   // PHASE 3: Heuristic Boundary Reconciliation
@@ -405,7 +424,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
       const nextFirst = pageItems[0];
       if (isLikelyContinuation(prevLast, nextFirst)) {
         const pageNum = parallelResults[i].pageIndex + 1;
-        console.log(`[AI-SERVICE] [PARALLEL MODE] 🔀 Rekonsiliasi: Menjahit item terpotong di batas Hal ${pageNum - 1} & Hal ${pageNum}`);
+
+        log.debug({ event: 'boundary_reconciliation', docCode, page: pageNum }, `Rekonsiliasi item terpotong di batas hal ${pageNum - 1}/${pageNum}`);
+
         Object.assign(prevLast, nextFirst);
         pageItems.shift();
       }
@@ -414,7 +435,9 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
     // Merge footer/summary dari halaman terakhir ke masterJson
     // mergeArraysDeep hanya mengisi field yang masih null — tidak menimpa data halaman 1
     if (isLastPage && fullData) {
-      console.log('[AI-SERVICE] [PARALLEL MODE] 🧩 Merging Last Page (Footer/Summary Data)...');
+
+      log.debug({ event: 'last_page_merge', docCode }, 'Merging last page footer/summary');
+
       if (docCode === '001' || docCode === '217') {
         parseItemsCsv(fullData, docCode);
       }
@@ -439,6 +462,8 @@ export const processParallelPdfExtraction = async (fileBuffer, docCode, prompt, 
 
   await debugLog(docCode, 'parallel_merged_output', masterJson);
   const totalItems = getItemArray(masterJson).length;
-  console.log(`[AI-SERVICE] [PARALLEL MODE] ✅ Selesai. Total item terkumpul: ${totalItems}`);
+
+  log.info({ event: 'jalur_b_completed', docCode, totalItems }, `Jalur B selesai: ${totalItems} items`);
+
   return masterJson;
 };

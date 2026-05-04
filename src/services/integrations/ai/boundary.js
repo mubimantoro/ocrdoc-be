@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 /* eslint-disable camelcase */
 import fs from 'fs/promises';
 import { PDFDocument } from 'pdf-lib';
@@ -6,6 +7,7 @@ import { ai, MODELS } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
 import { buildDocumentsFromPages } from '../../../utils/boundary-resolver.js';
 import { extractOcrTokens } from './helpers.js';
+import logger from '../../../config/logger.js';
 
 /**
  * Membuat chunk buffer dari PDF. Bypass pdf-lib jika dokumen sudah utuh
@@ -51,7 +53,7 @@ const accumulateTokenUsage = (accumulator, result) => {
  * @param {string|null} docType - Tipe dokumen target (menentukan prompt yang dipakai).
  * @returns {Promise<{pages: Array, usage: object, modelUsed: string}>}
  */
-export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, totalPagesInChunk, docType = null) => {
+export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, totalPagesInChunk, docType = null, log = logger) => {
   const prompt = getBoundaryPromptForDocType(docType, absoluteStartPage, totalPagesInChunk);
 
   const response = await ai.models.generateContent({
@@ -90,7 +92,7 @@ export const detectBoundaries = async (fileBuffer, mimeType, absoluteStartPage, 
  * @param {string|null} docType - Tipe dokumen target.
  * @returns {Promise<{documents: Array, usage: object, modelUsed: string, pageCount: number}>}
  */
-export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 15, docType = null) => {
+export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPagesPerChunk = 15, docType = null, log = logger) => {
   const pdfBuffer = await fs.readFile(absoluteFilePath);
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
 
@@ -100,11 +102,26 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
 
   const actualMaxPages = pdfDoc.isEncrypted ? totalPages : maxPagesPerChunk;
 
+  log.info({
+    event: 'boundary_chunked_start',
+    docType,
+    totalPages,
+    maxPagesPerChunk,
+    isEncrypted: pdfDoc.isEncrypted,
+  }, `Boundary detection dimulai: ${totalPages} halaman`);
+
   for (let startPage = 1; startPage <= totalPages; startPage += maxPagesPerChunk) {
     const endPage = Math.min(startPage + actualMaxPages - 1, totalPages);
     const pagesInThisChunk = endPage - startPage + 1;
 
-    console.log(`[BOUNDARY] Tagging chunk: Hal ${startPage} - ${endPage} dari ${totalPages} ${pdfDoc.isEncrypted ? '(SECURED)' : ''}`);
+    log.debug({
+      event: 'boundary_chunk_processing',
+      docType,
+      startPage,
+      endPage,
+      totalPages,
+      isEncrypted: pdfDoc.isEncrypted,
+    }, `Tagging chunk: hal ${startPage}-${endPage} dari ${totalPages}${pdfDoc.isEncrypted ? ' (SECURED)' : ''}`);
 
     const chunkBuffer = await buildChunkBuffer(pdfBuffer, pdfDoc, startPage, endPage);
     const result = await detectBoundaries(Buffer.from(chunkBuffer), mimeType, startPage, pagesInThisChunk, docType);
@@ -115,7 +132,12 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
       if (foundPage) {
         allPagesRaw.push(foundPage);
       } else {
-        console.warn(`[BOUNDARY] Missing page data for page ${p}, using fallback.`);
+        log.warn({
+          event: 'boundary_page_missing',
+          page: p,
+          docType,
+        }, `Missing page data untuk hal ${p} — menggunakan fallback`);
+
         allPagesRaw.push({ absolute_page_number: p, is_new_document: false, doc_code: '999', document_number: null, vendor: null, confidence: 0 });
       }
     }

@@ -3,14 +3,19 @@ import { boundaryWorker } from './queues/boundary-queue.js';
 import { extractionWorker } from './queues/extraction-queue.js';
 import { webhookQueue } from './queues/webhook.queue.js';
 import { maintenanceWorker, initMaintenanceJobs } from './queues/maintenance-queue.js';
+import logger from './config/logger.js';
 
-console.log('===================================================');
-console.log('SYSTEM STARTING: Enterprise Background Worker');
-console.log('===================================================');
+logger.info({
+  event: 'worker_starting',
+  nodeEnv: process.env.NODE_ENV || 'development',
+}, 'Enterprise Background Worker starting');
 
 const workers = [boundaryWorker, extractionWorker, webhookQueue, maintenanceWorker];
 
-console.log('[WORKER] Node.js terhubung ke Redis. Semua worker aktif memantau antrean...');
+logger.info({
+  event: 'workers_ready',
+  workerCount: workers.length,
+}, 'Semua worker aktif memantau antrean Redis');
 
 /**
  * =========================================================
@@ -20,14 +25,14 @@ console.log('[WORKER] Node.js terhubung ke Redis. Semua worker aktif memantau an
  * saat server di-restart atau di-deploy ulang.
  */
 const gracefulShutdown = async (signal) => {
-  console.log(`\n[WORKER] Menerima sinyal ${signal}. Memulai Graceful Shutdown...`);
-  console.log('[WORKER] Menunggu job yang sedang berjalan agar selesai dengan aman...');
+  logger.info({ event: 'shutdown_initiated', signal }, `Menerima sinyal ${signal} — memulai Graceful Shutdown`);
+
 
   // 1. Safety Net: Timeout 20 detik
   // Jika ada job yang nyangkut (stuck) dan tidak mau selesai,
   // kita paksa matikan agar container/server tidak hang selamanya.
   const forceExit = setTimeout(() => {
-    console.error('[WORKER] Shutdown menggantung lebih dari 20 detik. Force Exit diaktifkan!');
+    logger.fatal({ event: 'shutdown_timeout' }, 'Shutdown menggantung >20 detik — Force Exit');
     process.exit(1);
   }, 20000);
 
@@ -40,11 +45,14 @@ const gracefulShutdown = async (signal) => {
 
     // 3. Clear timeout dan keluar dengan status sukses (0)
     clearTimeout(forceExit);
-    console.log('[WORKER] Semua worker berhasil diputus dari Redis dengan aman.');
+
+    logger.info({ event: 'shutdown_completed' }, 'Semua worker diputus dari Redis dengan aman');
+
     process.exit(0);
 
   } catch (error) {
-    console.error('[WORKER] Terjadi error saat melakukan shutdown:', error.message);
+    logger.error({ event: 'shutdown_error', err: error }, `Error saat shutdown: ${error.message}`);
+
     clearTimeout(forceExit);
     process.exit(1);
   }
@@ -60,15 +68,15 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM')); // Sinyal kill dari Do
  * Mencegah aplikasi mati diam-diam (Silent Failure) jika ada error di luar try-catch.
  */
 process.on('uncaughtException', (error) => {
-  console.error('\n[WORKER] FATAL UNCAUGHT EXCEPTION:', error.message);
-  console.error(error.stack);
+  logger.fatal({ event: 'uncaught_exception', err: error }, `Uncaught Exception: ${error.message}`);
 
   // Karena state aplikasi mungkin sudah tidak stabil, lakukan shutdown yang aman
   gracefulShutdown('UNCAUGHT_EXCEPTION');
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('\n[WORKER] FATAL UNHANDLED REJECTION:', reason);
+  logger.fatal({ event: 'unhandled_rejection', reason }, 'Unhandled Promise Rejection');
+
   gracefulShutdown('UNHANDLED_REJECTION');
 });
 

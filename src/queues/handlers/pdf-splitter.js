@@ -1,6 +1,8 @@
+/* eslint-disable no-unused-vars */
 import fs from 'fs/promises';
 import { PDFDocument } from 'pdf-lib';
 import { uploadToStorage } from '../../services/integrations/storage-service.js';
+import logger from '../../config/logger.js';
 
 /**
  * Memotong halaman tertentu dari master PDF dan mengembalikan buffer-nya.
@@ -14,13 +16,14 @@ import { uploadToStorage } from '../../services/integrations/storage-service.js'
  * @param {number} totalPages - Total halaman dalam PDF asli.
  * @returns {Promise<Buffer>}
  */
-const slicePdf = async (masterPdfBuffer, masterPdfDoc, startPage, endPage, totalPages) => {
+const slicePdf = async (masterPdfBuffer, masterPdfDoc, startPage, endPage, totalPages, log = logger) => {
   const safeStart = Math.max(1, startPage);
   const safeEnd = Math.min(totalPages, endPage);
 
   // Bypass pdf-lib jika tidak perlu potong (dokumen utuh)
   if ((safeStart === 1 && safeEnd === totalPages) || masterPdfDoc.isEncrypted) {
-    console.log('[PDF-SPLITTER] Bypass: Dokumen utuh atau Secured.');
+    log.debug({ event: 'pdf_slice_bypass', startPage: safeStart, endPage: safeEnd, totalPages },
+      'PDF slice bypass: dokumen utuh atau secured');
     return masterPdfBuffer;
   }
 
@@ -42,8 +45,8 @@ const slicePdf = async (masterPdfBuffer, masterPdfDoc, startPage, endPage, total
  * @param {string} mimeType - MIME type file.
  * @returns {Promise<string>} - Path file yang sudah diupload.
  */
-export const splitAndUploadPdf = async (doc, docRecordId, masterPdfBuffer, masterPdfDoc, totalPages, mimeType) => {
-  const splitBuffer = await slicePdf(masterPdfBuffer, masterPdfDoc, doc.start_page, doc.end_page, totalPages);
+export const splitAndUploadPdf = async (doc, docRecordId, masterPdfBuffer, masterPdfDoc, totalPages, mimeType, log = logger) => {
+  const splitBuffer = await slicePdf(masterPdfBuffer, masterPdfDoc, doc.start_page, doc.end_page, totalPages, log);
   const splitFileName = `split-${docRecordId}-${Date.now()}.pdf`;
   return uploadToStorage(splitFileName, splitBuffer, mimeType);
 };
@@ -56,7 +59,7 @@ export const splitAndUploadPdf = async (doc, docRecordId, masterPdfBuffer, maste
  * @param {string} mimeType - MIME type file.
  * @returns {Promise<string>} - Path file yang sudah diupload.
  */
-export const uploadNonPdfFile = async (fileBuffer, docRecordId, mimeType) => {
+export const uploadNonPdfFile = async (fileBuffer, docRecordId, mimeType, log = logger) => {
   let ext = '.xlsx';
   if (mimeType === 'image/jpeg') ext = '.jpg';
   else if (mimeType === 'image/png') ext = '.png';
@@ -70,11 +73,12 @@ export const uploadNonPdfFile = async (fileBuffer, docRecordId, mimeType) => {
  * @param {string} absoluteFilePath
  * @returns {Promise<{buffer: Buffer, doc: import('pdf-lib').PDFDocument, totalPages: number}>}
  */
-export const loadMasterPdf = async (absoluteFilePath) => {
+export const loadMasterPdf = async (absoluteFilePath, log = logger) => {
   const buffer = await fs.readFile(absoluteFilePath);
   const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
   if (doc.isEncrypted) {
-    console.log('[PDF-SPLITTER] Dokumen terdeteksi Secured. Mengaktifkan mode Bypass.');
+    log.warn({ event: 'pdf_secured_detected', absoluteFilePath },
+      'PDF secured terdeteksi — mode bypass aktif');
   }
   return { buffer, doc, totalPages: doc.getPageCount() };
 };

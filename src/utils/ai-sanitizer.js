@@ -1,4 +1,6 @@
 /* eslint-disable no-unused-vars */
+import logger from '../config/logger.js';
+
 /**
  * Utility untuk memperbaiki JSON yang terpotong (Truncated) menggunakan algoritma Stack LIFO.
  */
@@ -43,8 +45,9 @@ const repairTruncatedJson = (jsonString) => {
   return repaired;
 };
 
-const harvestArrayStrings = (rawText) => {
-  console.warn('[AI SANITIZER] Memicu "The Harvester" untuk mengekstrak array secara kasar...');
+const harvestArrayStrings = (rawText, log = logger) => {
+  log.warn({ event: 'harvester_triggered' }, 'The Harvester aktif: ekstraksi array secara kasar');
+
   const results = [];
   const regex = /"([^"\\]*(?:\\.[^"\\]*)*\|[^"\\]*(?:\\.[^"\\]*)*)"/g;
   let match;
@@ -52,13 +55,15 @@ const harvestArrayStrings = (rawText) => {
     results.push(match[1]);
   }
   if (results.length > 0) {
-    console.log(`[AI SANITIZER] The Harvester berhasil memanen ${results.length} baris data!`);
+    log.info({ event: 'harvester_success', rowCount: results.length },
+      `The Harvester memanen ${results.length} baris data`);
+
     return results;
   }
   throw new Error('Harvester tidak menemukan pola Array of Strings yang valid.');
 };
 
-export const cleanAIJson = (rawText) => {
+export const cleanAIJson = (rawText, log = logger) => {
   if (!rawText) throw new Error('Respons AI kosong (null/undefined).');
 
   const cleanedText = rawText
@@ -70,18 +75,21 @@ export const cleanAIJson = (rawText) => {
     return JSON.parse(cleanedText);
   } catch (error) {
     try {
-      console.warn('[AI SANITIZER] Mendeteksi JSON terpotong, mencoba melakukan perbaikan cerdas (LIFO)...');
+      log.warn({ event: 'json_repair_attempt' }, 'JSON terpotong terdeteksi — mencoba perbaikan LIFO');
+
       const repairedText = repairTruncatedJson(cleanedText);
       return JSON.parse(repairedText);
     } catch (repairError) {
       try {
         return harvestArrayStrings(cleanedText);
       } catch (harvestError) {
-        console.error('\n[AI SANITIZER ERROR] Gagal melakukan parsing JSON bahkan setelah perbaikan:');
-        console.error('Error Message:', repairError.message);
-        console.error('--- RAW TEXT BEGIN ---');
-        console.error(rawText);
-        console.error('--- RAW TEXT END ---\n');
+        log.error({
+          event: 'json_parse_failed',
+          repairError: repairError.message,
+          harvestError: harvestError.message,
+          rawTextPreview: rawText?.slice(0, 500), // Cukup 500 char untuk diagnosis
+        }, 'Gagal parsing JSON dari respons AI setelah semua upaya perbaikan');
+
         throw new Error('Gagal mengekstrak data JSON dari respons AI. Format tidak valid setelah upaya perbaikan.');
       }
     }
