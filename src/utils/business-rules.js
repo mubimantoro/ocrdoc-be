@@ -431,13 +431,50 @@ const rulesRegistry = {
       NOISE_REGEX: /(?:THIRD-PARTY OPERATOR|SEE ATTACHMENT|THIS IS TO CERTIFY|WE|TOTAL)[\s\S]*/i
     };
 
+    // ─── GROSS WEIGHT GUARD (Deterministik, Safety Net Layer 2) ───────────────
+    // Kontrak: gross_weight diisi HANYA jika ada label berat eksplisit.
+    // Jika prompt (Layer 1) masih meloloskan kuantitas murni, filter ini menangkapnya.
+    const sanitizeGrossWeight = (item) => {
+      const raw = item.gross_weight;
+      if (raw === null || raw === undefined) return null;
+
+      const rawStr = String(raw).trim().toUpperCase();
+
+      // Jika nilai adalah Number murni dari prompt (sudah benar) → lewati validasi string
+      // tapi tetap pastikan bukan 0 yang tidak bermakna
+      if (typeof raw === 'number') {
+      // Number murni dianggap valid hanya jika prompt sudah mengikuti aturan Layer 1.
+      // Kita tidak bisa memvalidasi konteks Number tanpa label, jadi percayakan ke prompt.
+        return raw > 0 ? raw : null;
+      }
+
+      // String: cek apakah mengandung label berat yang valid
+      if (CONFIG.WEIGHT_LABEL_REGEX.test(rawStr)) {
+      // Ekstrak angka murni dari string berat yang valid
+      // Contoh: "75SETS 300KG G.W." → ambil angka SEBELUM label berat
+        const weightMatch = rawStr.match(/(\d+(?:\.\d+)?)\s*(?:KGS?|LBS?|MT|TON|G\.?W)/i);
+        if (weightMatch) return parseFloat(weightMatch[1]);
+
+        // Fallback: ambil angka pertama yang ditemukan
+        const numMatch = rawStr.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+        return numMatch ? parseFloat(numMatch[0]) : null;
+      }
+
+      // String hanya berisi satuan hitung → null
+      if (CONFIG.COUNT_UNIT_REGEX.test(rawStr)) return null;
+
+      // String ambigu tanpa label berat → null (sesuai kontrak client)
+      return null;
+    };
+
     // 1. GUILLOTINE FILTER & SANITIZATION
     root.items = root.items.filter((item) => {
       const prodStr = String(item.prod_number || '').toUpperCase();
       const descStr = String(item.description || '').toUpperCase();
       const pkgStr = String(item.type_package || '').toUpperCase();
-
-      const isAttachment = CONFIG.ATTACHMENT_INDICATORS.some((ind) => prodStr.includes(ind) || descStr.includes(ind)) || pkgStr.includes('C/NO');
+      const isAttachment = CONFIG.ATTACHMENT_INDICATORS.some(
+        (ind) => prodStr.includes(ind) || descStr.includes(ind)
+      ) || pkgStr.includes('C/NO');
       return !isAttachment;
     }).map((item) => {
       const parseNum = (val) => {
@@ -450,14 +487,20 @@ const rulesRegistry = {
       };
 
       item.unit_value = parseNum(item.unit_value);
-      item.gross_weight = parseNum(item.gross_weight);
+
+      // gross_weight menggunakan sanitizer khusus — BUKAN parseNum generik
+      item.gross_weight = sanitizeGrossWeight(item);
+
       item.number_package = parseNum(item.number_package);
 
       const ocStr = String(item.origin_criteria || '').replace(/[^A-Z]/g, '').toUpperCase();
       item.origin_criteria = CONFIG.VALID_ORIGIN_CODES.includes(ocStr) ? ocStr : null;
 
       if (item.description) {
-        item.description = item.description.replace(CONFIG.NOISE_REGEX, '').replace(/\s{2,}/g, ' ').trim();
+        item.description = item.description
+          .replace(CONFIG.NOISE_REGEX, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
       }
       return item;
     });
