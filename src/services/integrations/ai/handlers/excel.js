@@ -1,11 +1,11 @@
 import * as xlsx from 'xlsx';
 import { callGeminiWithRetry, mergeArraysDeep } from '../helpers.js';
+import logger from '../../../../config/logger.js';
 
 /**
  * HANDLER: EXCEL MAP-REDUCE
  */
-export const processExcelExtraction = async (fileBuffer, sheetName, prompt, tokenUsage) => {
-  console.log('\n[AI-SERVICE] [EXCEL MODE] Menerapkan Map-Reduce Batching...');
+export const processExcelExtraction = async (fileBuffer, sheetName, prompt, tokenUsage, log = logger) => {
   const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
   const targetSheetName = sheetName || workbook.SheetNames[0];
   const csvData = xlsx.utils.sheet_to_csv(workbook.Sheets[targetSheetName]);
@@ -27,10 +27,19 @@ export const processExcelExtraction = async (fileBuffer, sheetName, prompt, toke
     }
   }
 
+  log.info({
+    event: 'excel_extraction_start',
+    sheetName: targetSheetName,
+    totalLines: csvLines.length,
+    batchCount: batches.length,
+  }, `Excel Map-Reduce: ${batches.length} batch dari sheet '${targetSheetName}'`);
+
   let masterJson = null;
   for (let i = 0; i < batches.length; i++) {
-    console.log(`[AI-SERVICE] Memproses Excel Batch ${i + 1}/${batches.length}...`);
-    const { parsedData: batchJson, usageMetadata } = await callGeminiWithRetry([prompt, `Berikut adalah data mentah Excel:\n${batches[i]}`]);
+    log.debug({ event: 'excel_batch_processing', batch: i + 1, totalBatches: batches.length },
+      `Memproses Excel batch ${i + 1}/${batches.length}`);
+
+    const { parsedData: batchJson, usageMetadata } = await callGeminiWithRetry([prompt, `Berikut adalah data mentah Excel:\n${batches[i]}`], 3, null, log);
 
     tokenUsage.inputTotal += usageMetadata.promptTokenCount || 0;
     tokenUsage.output += usageMetadata.candidatesTokenCount || 0;

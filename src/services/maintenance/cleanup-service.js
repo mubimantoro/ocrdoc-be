@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import pool from '../../config/database.js';
+import logger from '../../config/logger.js';
 
 /**
  * Maintenance Service: Membersihkan file fisik yang sudah kadaluarsa (> 30 hari)
@@ -10,8 +11,9 @@ class CleanupService {
     this.uploadDir = path.resolve('uploads');
   }
 
-  async runCleanup() {
-    console.log('\n[MAINTENANCE] Memulai proses pembersihan file lama (> 30 hari)...');
+  async runCleanup(log = logger) {
+    log.info({ event: 'cleanup_start' }, 'Memulai pembersihan file lama (> 30 hari)');
+
     try {
       // 1. Ambil data Source Files yang sudah > 30 hari dan belum ditandai is_deleted
       const { rows: sourceFiles } = await pool.query(`
@@ -47,16 +49,17 @@ class CleanupService {
         }
       }
 
-      console.log(`[MAINTENANCE] Pembersihan selesai. Total ${deletedCount} file dihapus.`);
+      log.info({ event: 'cleanup_completed', deletedCount }, `Pembersihan selesai: ${deletedCount} file dihapus`);
       return deletedCount;
 
     } catch (error) {
-      console.error('[MAINTENANCE] Error saat proses cleanup:', error.message);
+      log.error({ event: 'cleanup_failed', err: error }, `Error saat cleanup: ${error.message}`);
+
       throw error;
     }
   }
 
-  async deletePhysicalFile(relativePaths) {
+  async deletePhysicalFile(relativePaths, log = logger) {
     if (!relativePaths) return false;
 
     try {
@@ -69,7 +72,11 @@ class CleanupService {
     } catch (err) {
       // Jika file memang sudah tidak ada, tandai saja di DB sebagai sukses agar tidak diulang
       if (err.code === 'ENOENT') return true;
-      console.error(`[MAINTENANCE] Gagal menghapus file ${relativePaths}:`, err.message);
+      log.warn({
+        event: 'file_delete_failed',
+        filePath: relativePaths,
+        err,
+      }, `Gagal menghapus file: ${relativePaths}`);
       return false;
     }
   }

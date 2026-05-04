@@ -1,5 +1,6 @@
 import { Queue, Worker } from 'bullmq';
 import CleanupService from '../services/maintenance/cleanup-service.js';
+import logger from '../config/logger.js';
 
 const connection = {
   host: process.env.REDIS_HOST,
@@ -12,9 +13,19 @@ export const maintenanceQueue = new Queue('maintenance-jobs', { connection });
 
 // 2. Definisi Worker
 export const maintenanceWorker = new Worker('maintenance-jobs', async (job) => {
+  const log = logger.child({
+    jobId: job.id,
+    jobName: job.name,
+    module: 'maintenance-worker',
+  });
+
+  log.info({ event: 'job_started' }, `Maintenance job dimulai: ${job.name}`);
+
   if (job.name === 'daily-cleanup') {
     await CleanupService.runCleanup();
   }
+
+  log.info({ event: 'job_completed' }, `Maintenance job selesai: ${job.name}`);
 }, { connection });
 
 // 3. Registrasi Repeatable Job (Sekali sehari jam 00:00)
@@ -33,5 +44,8 @@ export const initMaintenanceJobs = async () => {
     removeOnComplete: true
   });
 
-  console.log('[MAINTENANCE] Scheduler aktif: Pembersihan file otomatis berjalan setiap jam 00:00.');
+  logger.info({
+    event: 'maintenance_scheduler_ready',
+    cronPattern: '0 0 * * *',
+  }, 'Maintenance scheduler aktif: daily-cleanup berjalan setiap jam 00:00');
 };

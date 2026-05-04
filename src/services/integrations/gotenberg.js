@@ -1,11 +1,14 @@
+import logger from '../../config/logger.js';
+
 /**
  * MICROSERVICE: Gotenberg Excel to PDF Converter
  * Menerima Buffer Excel, mengembalikan Buffer PDF.
  * * Menggunakan Native Fetch API (Node 18+) agar ringan dan tidak butuh form-data pihak ketiga.
  */
-export const convertExcelToPdf = async (excelBuffer, originalFileName) => {
-  console.log(`[GOTENBERG] Memulai konversi Excel ke PDF untuk file: ${originalFileName}...`);
+export const convertExcelToPdf = async (excelBuffer, originalFileName, log = logger) => {
   const startTime = Date.now();
+  log.info({ event: 'gotenberg_start', originalFileName },
+    `Konversi Excel ke PDF dimulai: ${originalFileName}`);
 
   const GOTENBERG_URL = process.env.GOTENBERG_URL;
   const USER = process.env.GOTENBERG_USER;
@@ -49,19 +52,24 @@ export const convertExcelToPdf = async (excelBuffer, originalFileName) => {
     // Ambil hasil response berupa binary (ArrayBuffer) lalu ubah kembali jadi Node.js Buffer
     const pdfArrayBuffer = await response.arrayBuffer();
     const pdfBuffer = Buffer.from(pdfArrayBuffer);
+    const durationMs = Date.now() - startTime;
 
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`[GOTENBERG] Konversi sukses dalam ${duration} detik. Ukuran PDF: ${(pdfBuffer.length / 1024).toFixed(2)} KB`);
+    log.info({
+      event: 'gotenberg_success',
+      originalFileName,
+      durationMs,
+      pdfSizeKb: (pdfBuffer.length / 1024).toFixed(2),
+    }, `Konversi sukses dalam ${(durationMs / 1000).toFixed(2)}s — ${(pdfBuffer.length / 1024).toFixed(2)} KB`);
 
     return pdfBuffer;
 
   } catch (error) {
-    console.error('[GOTENBERG] Gagal mengonversi Excel ke PDF:', error.message);
-
-    if (error.cause) {
-      console.error('[GOTENBERG Detail Penyebab:', error.cause);
-    }
-
+    log.error({
+      event: 'gotenberg_failed',
+      originalFileName,
+      err: error,
+      ...(error.cause ? { cause: error.cause } : {}),
+    }, `Gagal konversi Excel ke PDF: ${error.message}`);
     throw error;
   }
 };

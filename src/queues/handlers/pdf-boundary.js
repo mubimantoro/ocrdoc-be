@@ -1,5 +1,6 @@
 /* eslint-disable camelcase */
 import { detectBoundariesChunked } from '../../services/integrations/ai/boundary.js';
+import logger from '../../config/logger.js';
 
 /**
  * Memproses boundary detection untuk file PDF.
@@ -10,15 +11,15 @@ import { detectBoundariesChunked } from '../../services/integrations/ai/boundary
  * @param {string} manualDocType - Tipe dokumen yang diwajibkan oleh user.
  * @returns {Promise<{documents: Array, usage: object, modelUsed: string}>}
  */
-export const processPdfBoundary = async (absoluteFilePath, mimeType, manualDocType) => {
+export const processPdfBoundary = async (absoluteFilePath, mimeType, manualDocType, log = logger) => {
   if (!manualDocType) {
     throw new Error('manualDocType is required in the new architecture.');
   }
 
-  console.log(`[PDF-BOUNDARY] Memulai segmentasi dengan rute paksa tipe: '${manualDocType}'`);
+  log.info({ event: 'pdf_boundary_start', manualDocType }, `Segmentasi dimulai: '${manualDocType}'`);
 
   // LAYER 1: Segmentasi (Gunakan prompt sesuai docType)
-  const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15, manualDocType);
+  const boundaryResult = await detectBoundariesChunked(absoluteFilePath, mimeType, 15, manualDocType, log);
   let documents = boundaryResult.documents || [];
 
   // LAYER 2: Enforce Data (Memastikan semua dokumen memiliki doc_code yang diminta user)
@@ -29,7 +30,12 @@ export const processPdfBoundary = async (absoluteFilePath, mimeType, manualDocTy
 
   // LAYER 3: CIPL Safety Net (Force Single Document)
   if (manualDocType === '001' && documents.length > 0) {
-    console.log('[PDF-BOUNDARY] CIPL Mode: Enforcing single document for the entire file.');
+    log.info({
+      event: 'cipl_single_doc_enforced',
+      manualDocType,
+      pageCount: boundaryResult.pageCount,
+    }, 'CIPL Mode: enforcing single document untuk seluruh file');
+
     return {
       documents: [{
         doc_code: '001',
@@ -44,7 +50,11 @@ export const processPdfBoundary = async (absoluteFilePath, mimeType, manualDocTy
     };
   }
 
-  console.log(`[PDF-BOUNDARY] Segmentasi selesai. Menghasilkan ${documents.length} dokumen tipe '${manualDocType}'.`);
+  log.info({
+    event: 'pdf_boundary_completed',
+    manualDocType,
+    documentCount: documents.length,
+  }, `Segmentasi selesai: ${documents.length} dokumen tipe '${manualDocType}'`);
 
   return {
     documents,

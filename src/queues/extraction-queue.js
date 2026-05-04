@@ -16,6 +16,7 @@ import SourceFileRepositories from '../services/source-files/repositories/source
 import ExtractionJobRepositories from '../services/documents/repositories/extraction-job-repositories.js';
 import EavRepositories from '../services/eav/repositories/eav-repositories.js';
 import ExtractionResultRepositories from '../services/documents/repositories/extraction-result-repositories.js';
+import logger from '../config/logger.js';
 // import { webhookQueue } from './webhook.queue.js';
 
 const connection = {
@@ -27,8 +28,12 @@ const connection = {
 export const extractionQueue = new Queue('extraction-jobs', { connection });
 
 export const extractionWorker = new Worker('extraction-jobs', async (job) => {
-  console.log('\n===========================================');
-  console.log(`[EXTRACTION WORKER] Memulai Job ID: ${job.id} | Doc Code: ${job.data.docCode}`);
+  const log = logger.child({
+    jobId: job.id,
+    documentId: job.data.documentId,
+    docCode: job.data.docCode,
+    module: 'extraction-worker',
+  });
 
   const {
     documentId,
@@ -73,8 +78,17 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
       else actualMimeType = 'application/pdf';
     }
 
-    const extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName, isExcelToPdf);
+    const extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName, isExcelToPdf, log);
     const durationMs = Date.now() - startProcessTime;
+
+    log.info({
+      event: 'ai_extraction_completed',
+      durationMs,
+      modelUsed: extracted.modelUsed,
+      tokenInput: extracted.usage.inputTotal,
+      tokenOutput: extracted.usage.output,
+      tokenOcr: extracted.usage.ocr,
+    }, `AI selesai dalam ${durationMs}ms`);
 
     // ==============================================================
     // 3. KALKULASI BILLING & METRIK (WAJIB AWAIT)
@@ -245,28 +259,6 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
     await ExtractionJobRepositories.updateStatusAndProgress(extractionJobRecord.id, 'completed', 100);
     await DocumentRepositories.updateStatus(documentId, 'completed');
 
-    /*
-    await webhookQueue.add('send-webhook', {
-      documentId,
-      sourceFileId,
-      event: 'document.extracted.success',
-      payload: {
-        document_id: documentId,
-        source_file_id: sourceFileId,
-        doc_code: docCode,
-        status: 'completed',
-        data: rootData // Kirim JSON hasil AI utuh ke Klien!
-      }
-    }, {
-      attempts: 5, // Coba kirim 5 kali jika server klien mati
-      backoff: {
-        type: 'exponential',
-        delay: 15000 // Jeda retry: 15dtk, 30dtk, 60dtk, dst
-      },
-      removeOnComplete: true, // Hapus antrean jika sukses
-    });
-    */
-
     const allDocs = await DocumentRepositories.findAllBySourceFileId(sourceFileId);
     const finishedCount = allDocs.filter((doc) => ['completed', 'failed'].includes(doc.status)).length;
     const isAllFinished = finishedCount === allDocs.length;
@@ -280,19 +272,21 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
 
     socketEmitter.emit('document-status-update', { document_id: documentId, status: 'completed' });
 
-    console.log(`[EXTRACTION WORKER] Job ${job.id} SELESAI.`);
-    console.log('-------------------------------------------\n');
+    log.info({ event: 'job_completed' }, 'Job selesai');
     return { status: 'success', documentId };
 
   } catch (error) {
-    console.error(`\n[EXTRACTION WORKER] FATAL ERROR PADA JOB ${job.id}:`, error.message);
+    log.error({
+      event: 'job_failed',
+      err: error, // Pino otomatis serialize err.message + err.stack
+    }, `Job gagal: ${error.message}`);
 
     if (extractionJobRecord) {
       await ExtractionJobRepositories.updateStatusAndProgress(extractionJobRecord.id, 'failed', 0, error.message)
-        .catch((e) => console.error('[FALLBACK DB ERROR]', e.message));
+        .catch((e) => log.warn({ event: 'fallback_db_error', err: e }, 'Gagal update extraction job status'));
     }
     await DocumentRepositories.updateStatus(documentId, 'failed', error.message)
-      .catch((e) => console.error('[FALLBACK DB ERROR]', e.message));
+      .catch((e) => log.warn({ event: 'fallback_db_error', err: e }, 'Gagal update document status'));
 
     socketEmitter.emit('document-status-update', { document_id: documentId, status: 'failed', message: error.message });
 
@@ -303,7 +297,8 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
         socketEmitter.emit('source-file-update', { source_file_id: sourceFileId, status: 'completed' });
       }
     } catch (parentCheckError) {
-      console.error('[EXTRACTION WORKER] Gagal mengevaluasi parent status:', parentCheckError.message);
+      log.warn({ event: 'parent_status_check_failed', err: parentCheckError },
+        'Gagal mengevaluasi parent source file status');
     }
 
     throw error;

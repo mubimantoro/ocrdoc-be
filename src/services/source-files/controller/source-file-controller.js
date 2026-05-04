@@ -9,6 +9,7 @@ import SourceFileRepositories from '../repositories/source-file-repositories.js'
 import { formatSourceFileResponse } from '../../../utils/mapper/source-file.mapper.js';
 import { boundaryQueue } from '../../../queues/boundary-queue.js';
 import path from 'path';
+import createChildLogger from '../../../utils/create-child-logger.js';
 
 /**
  * ==========================================
@@ -16,6 +17,7 @@ import path from 'path';
  * ==========================================
  */
 export const uploadFile = async (req, res, next) => {
+  const log = createChildLogger(req, 'source-file:upload');
   try {
     const file = req.file;
     const { doc_type } = req.body;
@@ -40,7 +42,8 @@ export const uploadFile = async (req, res, next) => {
         const fileBuffer = await fs.readFile(absoluteFilePath);
         const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
         if (pdfDoc.isEncrypted) {
-          console.warn(`[API GATEWAY] File ${fileName} memiliki Digital Signature. Diteruskan ke Worker secara utuh.`);
+          log.warn({ event: 'pdf_encrypted', fileName }, 'File memiliki Digital Signature, diteruskan utuh ke Worker');
+
         }
         pageCount = pdfDoc.getPageCount();
       } catch (err) {
@@ -74,11 +77,16 @@ export const uploadFile = async (req, res, next) => {
       backoff: { type: 'exponential', delay: 5000 }
     });
 
-    // 4. Susun Format Response
-    const recordForMapper = {
-      ...sourceFileRecord,
-      uploaded_by_name: req.user.name
-    };
+    log.info({
+      event: 'file_queued',
+      sourceFileId: sourceFileRecord.id,
+      fileName,
+      mimeType,
+      pageCount,
+      docType: doc_type,
+    }, `File ${fileName} berhasil diunggah dan masuk antrean`);
+
+    const recordForMapper = { ...sourceFileRecord, uploaded_by_name: req.user.name };
 
     const formattedData = formatSourceFileResponse(recordForMapper);
 

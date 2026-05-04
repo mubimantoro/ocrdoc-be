@@ -39,24 +39,61 @@ Hasilkan JSON dengan struktur berikut. Gunakan 'items_csv' (String) untuk mengga
   4. ANTI-BREAKING: DILARANG KERAS menggunakan tanda pipa (|) atau newline (\\n) di dalam teks data (Ganti dengan spasi). Ekstrak description SEPENUHNYA, tetapi abaikan klausa pengiriman/legal (seperti "S.T.C").
 
 3. DETEKSI KEMASAN (PACKAGING_TYPE & PACKAGING_TYPE_ITEM):
-   - ROOT 'packaging_type': Cari deklarasi utama pengiriman di bagian header/summary logistik (contoh: "Shipment of 9 Pallets"). Prioritaskan kata "Pallets" atau "Cartons" dibandingkan "Packages". Ekstrak nama kemasannya secara UTUH.
-   - 'packaging_type_item' (di invoice_list): PERHATIKAN NAMA KOLOM TABEL! Jika ada kolom bernama "Carton", "Box", atau "Pallet", maka jadikan nama kolom tersebut sebagai nilai kemasan untuk item di baris tersebut (contoh: isi dengan "Carton").
-
+   - ROOT 'packaging_type': Cari deklarasi utama pengiriman di bagian header/summary logistik
+     (contoh: "Shipment of 9 Pallets"). Prioritaskan kata "Pallets" atau "Cartons" dibandingkan
+     "Packages". Ekstrak nama kemasannya secara UTUH.
+   - 'packaging_type_item' (di invoice_list): PERHATIKAN NAMA KOLOM TABEL! Jika ada kolom
+     bernama "Carton", "Box", atau "Pallet", maka jadikan nama kolom tersebut sebagai nilai
+     kemasan untuk item di baris tersebut (contoh: isi dengan "Carton").
+ 
 4. LOGIKA CROSS-REFERENCING (KHUSUS pl_list.items_csv):
-   - CIPL memisahkan "Tabel Summary Package" dan "Tabel Detail Item".
-   - BERAT KOTOR/BERSIH (\`net_weight\`, \`gross_weight\`): Kamu WAJIB melihat sebuah item masuk ke "Package no." mana saja, lalu JUMLAHKAN (SUM) berat dari package-package tersebut berdasarkan Tabel Package Summary.
-   - KEMASAN (\`packaging_qty\`): Hitung total JUMLAH UNIK KEMASAN FISIK (Package) yang memuat item tersebut.
-   - \`packaging_unit\`: Ekstrak jenis kemasan fisik utamanya (contoh: "CT" untuk Carton, "PCE" untuk Pieces).
-
+   CIPL umumnya memiliki dua lapisan tabel: "Tabel Summary per Invoice/Material" dan
+   "Tabel Detail Handling Unit". Gunakan KEDUA lapisan ini secara hierarkis:
+ 
+   A. BERAT KOTOR/BERSIH ('net_weight', 'gross_weight'):
+      - PRIORITAS 1 (Tabel Summary): Jika ada Tabel Summary yang mencantumkan total berat
+        per material/invoice (kolom seperti "Weight", "Net Weight", "Gross Weight"),
+        GUNAKAN nilai dari sana secara langsung. Ini adalah ground truth.
+      - PRIORITAS 2 (Kalkulasi Manual): Jika tidak ada Tabel Summary berat, identifikasi
+        semua Handling Unit / Package yang memuat item tersebut dari Tabel Detail,
+        lalu JUMLAHKAN (SUM) berat masing-masing Handling Unit tersebut.
+ 
+   B. JUMLAH KEMASAN ('packaging_qty') — SUMBER DATA WAJIB BERURUTAN:
+      - PRIORITAS 1 (Tabel Summary): Cari kolom bernama "Box", "Carton", "No. of Pkg",
+        "Pkg Qty", atau sejenisnya pada Tabel Summary per material/invoice.
+        GUNAKAN nilai kolom tersebut LANGSUNG sebagai 'packaging_qty'. INI ADALAH
+        SUMBER PALING AKURAT. DILARANG menghitung ulang jika nilai ini sudah tersedia.
+      - PRIORITAS 2 (Hitung dari Detail): Hanya jika Tabel Summary TIDAK memiliki
+        kolom jumlah kemasan, barulah hitung JUMLAH BARIS UNIK Handling Unit /
+        Package di Tabel Detail yang memuat item tersebut.
+ 
+   C. UNIT KEMASAN ('packaging_unit') — ATURAN NILAI:
+      - Nilai DEFAULT adalah "CT" (Carton/Box). Gunakan ini jika dokumen tidak
+        mendeklarasikan unit kemasan lain secara eksplisit.
+      - Nilai OVERRIDE: Jika dokumen secara eksplisit menyebutkan unit kemasan fisik
+        yang berbeda (misal: "PLT" untuk Pallet, "BAG" untuk Bag, "DRUM" untuk Drum),
+        gunakan nilai tersebut.
+      - LARANGAN KERAS: JANGAN menggunakan unit quantity barang (seperti "PC", "PCE",
+        "PCS", "EA", "SET") sebagai nilai 'packaging_unit'. Unit tersebut adalah milik
+        field 'quantity_unit', bukan 'packaging_unit'.
+ 
 5. KONSISTENSI HARGA & PEMISAHAN DOMAIN (INVOICE vs PL):
-   - PL LIST: Kolom harga (unit_price, amount) di 'pl_list.items_csv' biarkan KOSONG (||) JIKA TIDAK tertulis eksplisit di tabel logistik. (Backend kami yang akan mensinkronisasikannya).
-   - INVOICE LIST (CURRENCY MISMATCH GUARD): Perhatikan header kolom harga! Jika 'Unit Price' menggunakan mata uang (misal: RMB) yang BERBEDA dengan 'Amount' (misal: USD), dan kamu mengekstrak Amount dalam USD, maka kamu DILARANG KERAS mengekstrak Unit Price RMB tersebut. Biarkan unit_price KOSONG (||) karena nilainya tidak setara secara matematis.
-
+   - PL LIST: Kolom harga (unit_price, amount) di 'pl_list.items_csv' biarkan KOSONG (||)
+     JIKA TIDAK tertulis eksplisit di tabel logistik. (Backend kami yang akan mensinkronisasikannya).
+   - INVOICE LIST (CURRENCY MISMATCH GUARD): Perhatikan header kolom harga! Jika 'Unit Price'
+     menggunakan mata uang (misal: RMB) yang BERBEDA dengan 'Amount' (misal: USD), dan kamu
+     mengekstrak Amount dalam USD, maka kamu DILARANG KERAS mengekstrak Unit Price RMB tersebut.
+     Biarkan unit_price KOSONG (||) karena nilainya tidak setara secara matematis.
+ 
 6. LOGIKA ASAL NEGARA (ORIGIN) & INCOTERMS:
-   - Origin: Ekstrak nama utuh (contoh: CHINA) dan ISO Alpha-2 (contoh: CN). Cari di tabel, deskripsi barang, atau deklarasi global.
-   - Incoterms (\`inco_terms\`): Cari "Terms of Delivery" atau klausul pengiriman. Ekstrak NILAI SEPENUHNYA persis seperti yang tertulis di dokumen DILARANG memotong atau menyingkat teks aslinya.
-
+   - Origin: Ekstrak nama utuh (contoh: CHINA) dan ISO Alpha-2 (contoh: CN). Cari di tabel,
+     deskripsi barang, atau deklarasi global.
+   - Incoterms ('inco_terms'): Cari "Terms of Delivery" atau klausul pengiriman. Ekstrak NILAI
+     SEPENUHNYA persis seperti yang tertulis di dokumen. DILARANG memotong atau menyingkat teks aslinya.
+ 
 7. PETA LOKASI DATA & SANITIZATION:
-   - Kolom 'prod_number': HANYA ekstrak Product/Material Number/Part Number. JANGAN ambil Batch/Production Number.
-   - Sanitasi Angka: Hilangkan simbol satuan (kg, pcs) dan pemisah ribuan (koma) dari field numerik. Pastikan format Number murni (misal: 1250.50).
+   - Kolom 'prod_number': HANYA ekstrak Product/Material Number/Part Number.
+     JANGAN ambil Batch/Production Number.
+   - Sanitasi Angka: Hilangkan simbol satuan (kg, pcs) dan pemisah ribuan (koma) dari field
+     numerik. Pastikan format Number murni (misal: 1250.50).
 `;
