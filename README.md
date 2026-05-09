@@ -192,29 +192,29 @@ npm run webhook
 
 ## 📜 Supported Documents
 
-| Code  | Document                                    | Category     |
-| :---: | ------------------------------------------- | ------------ |
-| `000` | Cukai                                       | Bea Cukai    |
-| `001` | CIPL (Combined Invoice & Packing List)      | Logistik     |
-| `217` | Packing List (Native PDF & Excel Converted) | Logistik     |
-| `380` | Commercial Invoice                          | Logistik     |
-| `457` | SKB (Surat Keterangan Bebas)                | Perizinan ⚡ |
-| `704` | Master Bill of Lading (MBL)                 | Logistik     |
-| `705` | Bill of Lading (B/L)                        | Logistik     |
-| `740` | Air Waybill (AWB)                           | Logistik     |
-| `741` | Master Air Waybill (MAWB)                   | Logistik     |
-| `800` | POSTEL                                      | Perizinan ⚡ |
-| `813` | CK (Cukai Khusus)                           | Bea Cukai    |
-| `846` | SKEM / Surat Keterangan                     | Perizinan ⚡ |
-| `854` | BPOM                                        | Perizinan ⚡ |
-| `860` | E-COO (Electronic Certificate of Origin)    | Sertifikasi  |
-| `861` | COO (Manual Certificate of Origin)          | Sertifikasi  |
-| `871` | AKL                                         | Perizinan ⚡ |
-| `888` | Pengecualian                                | Lainnya ⚡   |
-| `957` | SNI (Standar Nasional Indonesia)            | Sertifikasi  |
-| `958` | L/S (Laporan Surveyor)                      | Logistik     |
-| `959` | PI (Persetujuan Impor)                      | Perizinan ⚡ |
-| `999` | Lainnya (Others)                            | Lainnya      |
+| Code  | Document                                    | Category    |
+| :---: | ------------------------------------------- | ----------- |
+| `000` | Cukai                                       | Bea Cukai   |
+| `001` | CIPL (Combined Invoice & Packing List)      | Logistik    |
+| `217` | Packing List (Native PDF & Excel Converted) | Logistik    |
+| `380` | Commercial Invoice                          | Logistik    |
+| `457` | SKB (Surat Keterangan Bebas)                | Perizinan   |
+| `704` | Master Bill of Lading (MBL)                 | Logistik    |
+| `705` | Bill of Lading (B/L)                        | Logistik    |
+| `740` | Air Waybill (AWB)                           | Logistik    |
+| `741` | Master Air Waybill (MAWB)                   | Logistik    |
+| `800` | POSTEL                                      | Perizinan   |
+| `813` | CK (Cukai Khusus)                           | Bea Cukai   |
+| `846` | SKEM / Surat Keterangan                     | Perizinan   |
+| `854` | BPOM                                        | Perizinan   |
+| `860` | E-COO (Electronic Certificate of Origin)    | Sertifikasi |
+| `861` | COO (Manual Certificate of Origin)          | Sertifikasi |
+| `871` | AKL                                         | Perizinan   |
+| `888` | Pengecualian                                | Lainnya     |
+| `957` | SNI (Standar Nasional Indonesia)            | Sertifikasi |
+| `958` | L/S (Laporan Surveyor)                      | Logistik    |
+| `959` | PI (Persetujuan Impor)                      | Perizinan   |
+| `999` | Lainnya (Others)                            | Lainnya     |
 
 ---
 
