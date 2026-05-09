@@ -56,16 +56,23 @@ The system is designed around three principles:
 ### Project Structure
 
 ```
-src/
-├── config/                   # Database, Redis, Gemini, and Logger initialization
-├── controllers/              # Route handlers, input validation, HTTP response shaping
-├── services/
-│   └── integrations/
-│       └── ai/               # Core extraction engine: strategies, handlers, helpers
-├── prompts/                  # Per-document-code prompting rules and heuristics
-├── schemas/                  # Absolute JSON schemas used for final output validation
-├── worker/                   # BullMQ job consumers and job lifecycle management
-└── utils/                    # Shared: AI Sanitizer, Business Rules, Schema Enforcer
+
+── src/
+    ├── config/        # DB, Redis, Gemini, Logger, and Socket.io initialization
+    ├── exceptions/    # Custom error classes (Auth, Authorization, NotFound, etc.)
+    ├── middlewares/   # Auth, authorization, validation, upload, and request logging
+    ├── prompts/       # Per-document AI prompting rules (boundary & extraction)
+    ├── queues/        # BullMQ queue definitions and job dispatchers
+    ├── routes/        # Centralized Express route registry
+    ├── schemas/       # Absolute JSON schemas per document code (000–999)
+    ├── scripts/       # Utility and maintenance scripts
+    ├── security/      # JWT sign, verify, and token management
+    ├── seeders/       # Database seed data (Admin account, Document Types)
+    ├── server/        # Express app factory and Socket.io server binding
+    ├── services/      # Business logic: auth, documents, AI integrations, users, etc.
+    ├── utils/         # Shared helpers: AI sanitizer, schema enforcer, PDF utils, etc.
+    ├── server.js      # API server entry point
+    └── worker.js      # Background worker entry point
 ```
 
 ---
