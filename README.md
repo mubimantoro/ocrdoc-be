@@ -56,8 +56,7 @@ The system is designed around three principles:
 ### Project Structure
 
 ```
-
-── src/
+├── src/
     ├── config/        # DB, Redis, Gemini, Logger, and Socket.io initialization
     ├── exceptions/    # Custom error classes (Auth, Authorization, NotFound, etc.)
     ├── middlewares/   # Auth, authorization, validation, upload, and request logging
