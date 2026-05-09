@@ -53,31 +53,6 @@ The system is designed around three principles:
 
 ## 🏗️ System Architecture
 
-```
-                    ┌─────────────────────────────────────┐
-                    │           API Server                │
-                    │   (Express v5 + Socket.io)          │
-                    │                                     │
-                    │  POST /documents/upload             │
-                    │       │                             │
-                    │       ▼                             │
-                    │  Enqueue Job (BullMQ)               │
-                    └──────────────┬──────────────────────┘
-                                   │
-                          Redis Queue (BullMQ)
-                                   │
-                    ┌──────────────▼──────────────────────┐
-                    │         Background Worker           │
-                    │                                     │
-                    │  1. Route    → Extraction Strategy  │
-                    │  2. Call     → Google Gemini API    │
-                    │  3. Heal     → AST Parser + Harvester│
-                    │  4. Validate → Schema Enforcer      │
-                    │  5. Persist  → PostgreSQL           │
-                    │  6. Emit     → Socket.io (Redis Pub)│
-                    └─────────────────────────────────────┘
-```
-
 ### Project Structure
 
 ```
