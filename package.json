@@ -40,7 +40,6 @@
     "nanoid": "^5.1.7",
     "node-pg-migrate": "^8.0.4",
     "pdf-lib": "^1.17.1",
-    "pdf-parser": "^1.0.5",
     "pg": "^8.20.0",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
