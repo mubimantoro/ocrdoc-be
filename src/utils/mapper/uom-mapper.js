@@ -172,6 +172,7 @@ const WEIGHT_CODES = {
   // Kilogram
   '001':       'KG',
   'KG':        'KG',
+  'KQ':        'KG',
   'KGS':       'KG',
   'KGM':       'KG',
   'KILOGRAM':  'KG',
@@ -270,6 +271,15 @@ export const standardizePackagingUnit = (unitStr) => {
 
   // 3. Tidak dikenali — kembalikan string asli agar tidak kehilangan data
   return unitStr;
+};
+
+/**
+ * standardizeWeightUnit — Menormalisasi unit berat (KG, LB, dll).
+ */
+export const standardizeWeightUnit = (unitStr) => {
+  if (!unitStr) return unitStr;
+  const sanitized = String(unitStr).trim().toUpperCase();
+  return WEIGHT_CODES[sanitized] || unitStr;
 };
 
 /**

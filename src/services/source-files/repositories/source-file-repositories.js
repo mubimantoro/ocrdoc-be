@@ -32,6 +32,18 @@ class SourceFileRepositories {
       values.push(`%${filters.search}%`);
       query += ` AND file_name ILIKE $${values.length}`;
     }
+    if (filters.startDate) {
+      values.push(filters.startDate);
+      query += ` AND created_at >= $${values.length}::TIMESTAMPTZ`;
+    }
+    if (filters.endDate) {
+      values.push(filters.endDate);
+      query += ` AND created_at <= $${values.length}::TIMESTAMPTZ`;
+    }
+    if (filters.targetDocType) {
+      values.push(filters.targetDocType);
+      query += ` AND target_doc_type = $${values.length}`;
+    }
 
     const result = await pool.query(query, values);
     return parseInt(result.rows[0].count, 10);
@@ -54,6 +66,18 @@ class SourceFileRepositories {
     if (filters.search) {
       values.push(`%${filters.search}%`);
       query += ` AND sf.file_name ILIKE $${values.length}`;
+    }
+    if (filters.startDate) {
+      values.push(filters.startDate);
+      query += ` AND sf.created_at >= $${values.length}::TIMESTAMPTZ`;
+    }
+    if (filters.endDate) {
+      values.push(filters.endDate);
+      query += ` AND sf.created_at <= $${values.length}::TIMESTAMPTZ`;
+    }
+    if (filters.targetDocType) {
+      values.push(filters.targetDocType);
+      query += ` AND sf.target_doc_type = $${values.length}`;
     }
 
     values.push(limit, offset);

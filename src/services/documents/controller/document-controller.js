@@ -5,7 +5,17 @@ import { formatDocumentResponse, formatListDocumentResponse } from '../../../uti
 import { transformRawData } from '../../../utils/mapper/raw-transformer.js';
 import response from '../../../utils/response.js';
 import DocumentRepositories from '../repositories/document-repositories.js';
+import DocumentTypeRepositories from '../repositories/document-type-repositories.js';
 import extractionJobRepositories from '../repositories/extraction-job-repositories.js';
+
+export const getDocumentTypes = async (req, res, next) => {
+  try {
+    const data = await DocumentTypeRepositories.findAll();
+    return response(res, 200, 'Berhasil mengambil daftar tipe dokumen', data);
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const getDocuments = async (req, res, next) => {
   try {
@@ -15,6 +25,7 @@ export const getDocuments = async (req, res, next) => {
 
     const filters = {};
     if (req.query.source_file_id) filters.sourceFileId = req.query.source_file_id;
+    if (req.query.document_type_id) filters.documentTypeId = req.query.document_type_id;
 
     // Eksekusi count dan list data secara paralel
     const [totalItems, rawDocs] = await Promise.all([
