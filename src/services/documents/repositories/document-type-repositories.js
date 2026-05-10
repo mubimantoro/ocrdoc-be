@@ -6,6 +6,12 @@ class DocumentTypeRepositories {
     const result = await pool.query(query, [code]);
     return result.rows[0] ? result.rows[0].id : null;
   }
+
+  async findAll() {
+    const query = 'SELECT * FROM document_types ORDER BY name ASC';
+    const result = await pool.query(query);
+    return result.rows;
+  }
 }
 
 export default new DocumentTypeRepositories();

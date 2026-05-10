@@ -46,6 +46,10 @@ class DocumentRepositories {
       values.push(filters.sourceFileId);
       query += ` AND d.source_file_id = $${values.length}`;
     }
+    if (filters.documentTypeId) {
+      values.push(filters.documentTypeId);
+      query += ` AND d.document_type_id = $${values.length}`;
+    }
 
     values.push(limit, offset);
     query += ` ORDER BY d.start_page ASC LIMIT $${values.length - 1} OFFSET $${values.length}`;
@@ -63,6 +67,10 @@ class DocumentRepositories {
     if (filters.sourceFileId) {
       values.push(filters.sourceFileId);
       query += ` AND source_file_id = $${values.length}`;
+    }
+    if (filters.documentTypeId) {
+      values.push(filters.documentTypeId);
+      query += ` AND document_type_id = $${values.length}`;
     }
     const result = await pool.query(query, values);
     return parseInt(result.rows[0].count, 10);

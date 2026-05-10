@@ -107,6 +107,9 @@ export const getAll = async (req, res, next) => {
     const filters = {};
     if (req.query.status) filters.status = req.query.status;
     if (req.query.search) filters.search = req.query.search;
+    if (req.query.start_date) filters.startDate = req.query.start_date;
+    if (req.query.end_date) filters.endDate = req.query.end_date;
+    if (req.query.target_doc_type) filters.targetDocType = req.query.target_doc_type;
 
     // 2. Eksekusi Query Paralel (Optimasi Performa)
     const [totalItems, rawData] = await Promise.all([
