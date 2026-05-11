@@ -104,8 +104,12 @@ CRITICAL DIRECTIVE FOR COO:
  * dokumen secara mandiri tanpa mapping kolom hardcode, karena format Excel
  * antar vendor berbeda-beda (grid tabular, hybrid template, dst).
  */
-export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false) => {
+export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false, globalContext = null) => {
   const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
+
+  const contextInjection = globalContext
+    ? `\nKONTEKS GLOBAL DOKUMEN INI:\nBerikut adalah informasi Header yang sudah diekstrak dari halaman pertama. Gunakan data ini sebagai referensi WAJIB untuk mengelompokkan item ke "invoice_number" yang tepat. Jika halaman ini tidak mencetak nomor invoice, cocokkan item dengan invoice yang relevan di bawah ini:\n${JSON.stringify(globalContext, null, 2)}\n`
+    : '';
 
   // ================================================================
   // JALUR KHUSUS 217_EXCEL — PENDEKATAN UNIVERSAL
@@ -189,7 +193,7 @@ CRITICAL: Output harus berupa JSON array yang valid dan tertutup sempurna dengan
 
   return `Kamu adalah AI Extractor Tabel. TUGASMU SANGAT SEMPIT:
 Ekstrak HANYA baris-baris data dari tabel/list yang ada di halaman ini.
- 
+${contextInjection}
 TARGET KEY: "${itemKey}"
  
 ATURAN KETAT:

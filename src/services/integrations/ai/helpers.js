@@ -226,6 +226,12 @@ export const parseItemsCsv = (data, docCode) => {
               const cleanedStr = val.toString().replace(/[^\d.-]/g, '');
               val = cleanedStr !== '' ? Number(cleanedStr) : null;
             }
+            // Sanitizer Layer 2
+            else if (['uom', 'quantity_unit'].includes(k) && val) {
+              val = val.toUpperCase();
+            } else if (k === 'description' && val) {
+              val = val.replace(/\s*\(\s*/g, ' (').replace(/\s*\)/g, ')').trim();
+            }
             obj[k] = val;
           });
           return obj;

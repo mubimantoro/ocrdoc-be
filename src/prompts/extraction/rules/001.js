@@ -134,6 +134,11 @@ CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-12) dan 'packaging_unit' (kol
 7. PETA LOKASI DATA & SANITIZATION:
    - Kolom 'prod_number': HANYA ekstrak Product/Material Number/Part Number.
      JANGAN ambil Batch/Production Number.
+   - Kolom 'number' (Urutan): NEGATIVE CONSTRAINT - DILARANG membuat/auto-increment urutan nomor sendiri. HANYA ekstrak jika angka tertulis EKSPLISIT di tabel. Jika tidak ada, biarkan kosong (||).
+   - Kolom 'uom' & 'quantity_unit': SELALU gunakan HURUF KAPITAL (contoh: KGS, PCS).
+   - Kolom 'description': Ekstrak teks deskripsi apa adanya, perhatikan spasi pada tanda kurung.
+   - Routing Atensi Header: Field 'ship_to', 'ship_to_city', 'ultimate_dest', dan 'shipment_date' WAJIB dicari mendetail di blok header/consignee dokumen. DILARANG kosong jika ada teksnya.
+   - Kolom 'packaging_type_item': WAJIB diekstrak persis dari kolom kemasan per baris (contoh: BX, SA).
    - Sanitasi Angka: Hilangkan simbol satuan (kg, pcs) dan pemisah ribuan (koma) dari field
      numerik. Pastikan format Number murni (misal: 1250.50).
 `;

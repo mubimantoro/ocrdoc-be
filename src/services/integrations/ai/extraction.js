@@ -9,6 +9,7 @@ import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, debugLog, pars
 import { processExcelExtraction } from './handlers/excel.js';
 import { PDFDocument } from 'pdf-lib';
 import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtraction } from './handlers/pdf.js';
+import { processCiplPdfExtraction } from './handlers/pdf-cipl.js';
 import logger from '../../../config/logger.js';
 
 /**
@@ -151,6 +152,10 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       tokenUsage.ocr += extractOcrTokens(usageMetadata);
       tokenUsage.total += usageMetadata.totalTokenCount || 0;
       finalParsedData = oneShotJson;
+    } else if (docCode === '001') {
+      // Strategi khusus CIPL: Boundary Detection On-the-Fly, SSOT, dan Grouping
+      log.info({ event: 'cipl_extraction_route', docCode, numPages: numPagesPdf }, `Routing ke CIPL Custom Handler (${numPagesPdf} hal)`);
+      finalParsedData = await processCiplPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage, log);
     } else if (forceParallel) {
       // Strategi 3: Parallel mode untuk dokumen berat atau 217_EXCEL
       finalParsedData = await processParallelPdfExtraction(fileBuffer, docCode, prompt, jsonSchema, tokenUsage, isExcelToPdf, log);
