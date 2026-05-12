@@ -2,6 +2,7 @@
 import { standardizePackagingUnit } from './mapper/uom-mapper.js';
 import { applyAwbRules } from '../services/documents/740-awb.js';
 import { applyBlRules } from '../services/documents/705-bl.js';
+import { applyPlRules } from '../services/documents/217-pl.js';
 
 
 /**
@@ -100,31 +101,10 @@ const rulesRegistry = {
   },
 
   // ==========================================
-  // RULES UNTUK PACKING LIST (217)
+  // RULES UNTUK PACKING LIST (217) - ISOLATED CALL
   // ==========================================
-  '217': (data) => {
-    const root = data.data || data;
-
-    if (root.packaging) {
-      root.packaging = standardizePackagingUnit(root.packaging);
-    } else if (root.packaging_type) {
-      root.packaging_type = standardizePackagingUnit(root.packaging_type);
-    }
-
-    if (Array.isArray(root.pl_list)) {
-      root.pl_list.forEach((pl) => {
-        if (Array.isArray(pl.items)) {
-          pl.items.forEach((plItem) => {
-            if (plItem.packaging_unit) {
-              plItem.packaging_unit = standardizePackagingUnit(plItem.packaging_unit);
-            }
-            if (plItem.quantity_unit) {
-              plItem.quantity_unit = standardizePackagingUnit(plItem.quantity_unit);
-            }
-          });
-        }
-      });
-    }
+  '217': async (data) => {
+    return await applyPlRules(data);
   },
 
   // ==========================================
