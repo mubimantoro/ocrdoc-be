@@ -1,6 +1,8 @@
 /* eslint-disable camelcase */
 import { standardizePackagingUnit } from './mapper/uom-mapper.js';
 import { applyAwbRules } from '../services/documents/740-awb.js';
+import { applyBlRules } from '../services/documents/705-bl.js';
+
 
 /**
  * Rules Registry
@@ -177,63 +179,13 @@ const rulesRegistry = {
   // ==========================================
   // RULES UNTUK BILL OF LADING (705)
   // ==========================================
-  '705': (data) => {
-    const root = data.data || data;
-    const notifyName = (root.notify_party_name || '').toUpperCase().trim();
-    const consigneeName = (root.consignee_name || '').toUpperCase().trim();
-
-    if (notifyName.includes('SAME AS') || (notifyName === consigneeName && consigneeName !== '')) {
-      root.notify_party_name = root.consignee_name;
-      if (root.consignee_address) {
-        root.notify_party_address = root.consignee_address;
-      }
-      if (!root.notify_party_tax_id && root.consignee_tax_id) {
-        root.notify_party_tax_id = root.consignee_tax_id;
-      }
-    }
-
-    if (Array.isArray(root.items)) {
-      root.items.forEach((item) => {
-        if (item.c_o) {
-          item.c_o = item.c_o.replace(/C\/O:?/i, '')
-            .replace(/MADE IN/i, '')
-            .replace(/[^a-zA-Z\s]/g, '')
-            .trim().toUpperCase();
-        }
-      });
-    }
-
-    if (Array.isArray(root.containers)) {
-      const uniqueContainers = new Map();
-      root.containers.forEach((container) => {
-        if (container.container_type_code) {
-          container.container_type_code = container.container_type_code.replace(/['"\s]/g, '').toUpperCase();
-        } else if (container.container_size) {
-          container.container_type_code = container.container_size.replace(/['"\s]/g, '').toUpperCase();
-          container.container_size = null;
-        }
-
-        if (container.container_code) {
-          if (!uniqueContainers.has(container.container_code)) {
-            uniqueContainers.set(container.container_code, container);
-          } else {
-            const existing = uniqueContainers.get(container.container_code);
-            if (!existing.seal_code && container.seal_code) {
-              existing.seal_code = container.seal_code;
-            }
-          }
-        }
-      });
-      root.containers = Array.from(uniqueContainers.values());
-    }
-
-    if (Array.isArray(root.packaging) && root.packaging.length > 1) {
-      const mainPackage = root.packaging.reduce((prev, current) => {
-        return (Number(prev.qty) > Number(current.qty)) ? prev : current;
-      });
-      root.packaging = [mainPackage];
-    }
+  // ==========================================
+  // RULES UNTUK BILL OF LADING (705) - ISOLATED CALL
+  // ==========================================
+  '705': async (data) => {
+    return await applyBlRules(data);
   },
+
 
   // ==========================================
   // RULES UNTUK AIR WAYBILL (740) - ISOLATED CALL
