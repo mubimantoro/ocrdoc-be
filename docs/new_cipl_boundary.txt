@@ -1,0 +1,235 @@
+AI boundary detection
+
+
+
+    AI Detection boundary mengecek lebih dari sekadar page yang harus di
+    cut:
+
+       halaman yang mengandung header
+
+       apakah dokumen (bukan files) memiliki summary
+
+       halaman yang mengandung summary
+
+       halaman yang berisi invoice data
+
+       halaman yang berisi packing list data
+
+
+
+    summary merupakan single source of truth
+
+    jadi nilai dari summary adalah nilai utama untuk di isi, jika di halaman detail
+    memiliki data dari identitas yang sama dari summary maka timpa data
+    tersebut dari data summary page, jika data dari summary page null maka
+    ambil dari halaman detail
+
+                                                                                             Scheme
+
+
+
+
+    lakukan hal yang sama untuk header                                                                                         {
+
+                                                                                                                                    "type": "object",
+
+                                                                                                                                    "properties": {
+
+                                                                                                                                     "page_contain_header": {
+
+                                                                                                                                       "type": "object",
+
+     Prompt                                                                                                                            "properties": {
+
+                                                                                                                                          "start": { "type": "number" },
+
+                                                                                                                                          "end": { "type": "number" },
+
+                                                                                                                                          "exclude": {
+
+      Anda adalah seorang ahli ekstraksi dokumen. Tugas Anda adalah menganalisis dokumen CIPL (Commercial Invoice &                          "type": "array",
+
+                                                                                                                                             "items": { "type": "number" }
+
+      Packing List) dan mengekstrak informasi berdasarkan aturan berikut:
+                                                                }
+
+         Identifikasi Halaman Header (page_contain_header):
+                                                                           },
+
+                                                                                                                                       "propertyOrdering": ["start", "end", "exclude"],
+
+            Cari halaman yang berisi informasi header (seperti data pengirim, penerima, nomor dokumen, tanggal).
+                      "required": ["start", "end"]
+
+            Syarat Ketat: Halaman tersebut harus merupakan satu kesatuan informasi header yang lengkap, bukan sekadar                },
+
+
+
+            potongan halaman yang terputus (misalnya: hanya sisa teks dari halaman sebelumnya).
+                                     "is_document_contain_summary": {
+
+         Deteksi Ringkasan Dokumen (is_document_contain_summary & document_summary_page):
+                                             "type": "boolean"
+
+                                                                                                                                     },
+
+
+            Periksa apakah terdapat halaman khusus yang menyajikan ringkasan (summary/ringkasan secara eksplisit atau
+            indikator kuat) total dari seluruh dokumen (misal: total berat, total nilai, atau rekapitulasi akhir).
+                  "document_summary_page": {
+
+                                                                                                                                       "type": "object",
+
+            Jika ditemukan, set is_document_contain_summary menjadi true dan sebutkan nomor halamannya di                              "properties": {
+
+            document_summary_page.
+                                                                                                       "start": { "type": "number" },
+
+                                                                                                                                          "end": { "type": "number" },
+
+         Definisi Data Utama:
+                                                                                                            "exclude": {
+
+            Halaman yang dianggap berisi "data" adalah halaman yang memiliki tabel atau daftar barang (Packing List data                     "type": "array",
+
+                                                                                                                                             "items": { "type": "number" }
+
+            atau Invoice data). Ini adalah data inti yang menjelaskan rincian barang yang dikirim/ditagih.
+                               }
+
+      bagian exclude hanya di isi jika ada di halaman dalam rentang start dan end, jika tidak ada keluarkan sebagai array              },
+
+                                                                                                                                       "propertyOrdering": ["start", "end", "exclude"],
+
+      kosong 
+                                                                                                                         "required": ["start", "end"]
+
+                                                                                                                                     },
+
+
+
+                                                                                                                                     "page_contain_invoice_data": {
+
+                                                                                                                                       "type": "object",
+
+                                                                                                                                       "properties": {
+
+                                                                                                                                          "start": { "type": "number" },
+
+                                                                                                                                          "end": { "type": "number" },
+
+                                                                                                                                          "exclude": {
+
+                                                                                                                                             "type": "array",
+
+                                                                                                                                             "items": { "type": "number" }
+
+                                                                                                                                          }
+
+                                                                                                                                       },
+
+                                                                                                                                       "propertyOrdering": ["start", "end", "exclude"],
+
+                                                                                                                                       "required": ["start", "end"]
+
+                                                                                                                                     },
+
+
+
+                                                                                                                                      "page_contain_packing_list_data": {
+
+                                                                                                                                         "type": "object",
+
+                                                                                                                                         "properties": {
+
+                                                                                                                                           "start": { "type": "number" },
+
+                                                                                                                                           "end": { "type": "number" },
+
+                                                                                                                                           "exclude": {
+
+                                                                                                                                              "type": "array",
+
+                                                                                                                                              "items": { "type": "number" }
+
+                                                                                                                                           }
+
+       CONTOH HASIL JSON:                                                                                                                },
+
+                                                                                                                                         "propertyOrdering": ["start", "end", "exclude"],
+
+       {
+
+                                                                                                                                         "required": ["start", "end"]
+
+          "page_contain_header": {
+                                                                                                   }
+
+                                                                                                                                    },
+
+
+             "start": 1,
+
+             "end": 1,
+                                                                                                             "propertyOrdering": [
+
+                                                                                                                                       "page_contain_header",
+
+             "exclude": []
+
+                                                                                                                                       "is_document_contain_summary",
+
+          },
+                                                                                                                          "document_summary_page",
+
+                                                                                                                                       "page_contain_invoice_data",
+
+          "is_document_contain_summary": true,
+
+                                                                                                                                       "page_contain_packing_list_data"
+
+          "document_summary_page": {
+                                                                                               ],
+
+                                                                                                                                    "required": [
+
+             "start": 60,
+
+                                                                                                                                       "page_contain_header",
+
+             "end": 64,
+                                                                                                               "is_document_contain_summary",
+
+                                                                                                                                       "page_contain_invoice_data",
+
+             "exclude": []
+
+                                                                                                                                       "page_contain_packing_list_data"
+
+          },
+                                                                                                                       ]
+
+                                                                                                                               }
+          "page_contain_invoice_data": {
+
+             "start": 2,
+
+             "end": 59,
+
+             "exclude": []
+
+          },
+
+          "page_contain_packing_list_data": {
+
+             "start": 2,
+
+             "end": 59,
+
+             "exclude": []
+
+          }
+
+       }
+

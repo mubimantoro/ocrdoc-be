@@ -1,0 +1,92 @@
+                                       ambil max 3 halaman                scan secara sekaligus,
+                                      header document + 1                 misal 5 halaman maka 5    Keluarkan data header
+                                      halaman dari packing                 halaman sekaligus di              only
+                                     list dan invoice list data                     scan
+
+
+
+
+                                                 ya
+
+
+
+
+                                                                          ambil halaman pertama
+                                           Check jika                      dari packing list data   Keluarkan data header
+Start CIPL   AI detection boundary        ada halaman             tidak    dan juga invoice data    only atau null jika tidak
+                                            header                             untuk di scan              ada header
+                                                                                 bersamaan
+
+
+
+
+                                                                                                                                                                                                        keluarkan semua sesuai
+                                                                                                                                                                                                                                                                                                                 grouping di BE by invoice number dan
+                                                                                                                                                                                                         skema invoice list saja                                                   scan seluruh page yang
+                                                                                                                                                                                                                                                                                                                   product_number (id material atau
+                                                                                                                                                                                                         berdasarkan summary                                                        berisi data invoice list
+                                                                                                                                                         scan invoice list                                                                            cek parameter null                                           Package no → bukan packing list
+                                                                                                                                                                                                          terutama id material                                                     untuk mengambil yang
+                                                                                                                                                                                                                                                                                                                number) baik untuk invoice agar keluar
+                                                                                                                                                                                                         (product_number atau                                                                 null
+                                                                                                                                                                                                                                                                                                                      data invoice yang lengkap
+                                                                                                                                                                                                              Package no)
+
+                                           cek jika ada
+                                                                                                                                                                                                                                                                                                                                                           Struktur Invoice list dan
+                                            summary                ya      single source of truth
+                                                                                                                                                                                                                                                                                                                                                           Packing List yang di join
+                                              page
+                                                                                                                                                                                                        keluarkan semua sesuai
+                                                                                                                                                                                                                                                                                                               grouping di BE by packing list number dan
+                                                                                                                                                                                                        skema packing list saja                                                    scan seluruh page yang
+                                                                                                                                                                                                                                                                                                                   product_number (id material atau
+                                                                                                                                                                                                         berdasarkan summary                                                        berisi data packing list
+                                                                                                                                                        Scan packing list                                                                             cek parameter null                                           Package no → bukan packing list
+                                                                                                                                                                                                          terutama id material                                                     untuk mengambil yang
+                                                                                                                                                                                                                                                                                                                 number) baik untuk packing list agar
+                                                                                                                                                                                                         (product_number atau                                                                 null
+                                                                                                                                                                                                                                                                                                                  keluar data packing list yang lengkap
+                                                                                                                                                                                                              Package no)
+
+
+
+
+                                                tidak
+
+
+
+
+                                                                                                                                                                               grouping di BE by invoice number dan
+                                                                                                                                 scan seluruh page yang
+                                                                                                                                                                                 product_number (id material atau
+                                                                                                                                  berisi data invoice list
+                                                                                                                                                                                 Package no → bukan packing list
+                                                                                                                                 untuk mengambil yang
+                                                                                                                                                                              number) baik untuk invoice agar keluar
+                                                                                                                                            null
+                                                                                                                                                                                    data invoice yang lengkap
+
+
+                                                                                                                                                                                                                                                      Struktur Invoice list dan
+                                            Start Scan
+                                                                                                                                                                                                                                                      Packing List yang di join
+
+
+                                                                                                                                                                             grouping di BE by packing list number dan
+                                                                                                                                 scan seluruh page yang
+                                                                                                                                                                                 product_number (id material atau
+                                                                                                                                  berisi data packing list
+                                                                                                                                                                                 Package no → bukan packing list
+                                                                                                                                 untuk mengambil yang
+                                                                                                                                                                               number) baik untuk packing list agar
+                                                                                                                                            null
+                                                                                                                                                                                keluar data packing list yang lengkap
+
+
+
+
+                                                                                                                                Note: khusus untuk packing list, grouping by packing list number dan package_number yang utama (eksplisit jika ada) jika tidak grouping default
+
+                                                                                                                                seperti yang di diagram
+
