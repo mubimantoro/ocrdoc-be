@@ -9,26 +9,22 @@ import logger from '../../../../config/logger.js';
 
 const CIPL_BOUNDARY_PROMPT = `Anda adalah ahli ekstraksi dokumen logistik. Tugas Anda menganalisis batas halaman dokumen CIPL (001).
 Sebuah dokumen CIPL memiliki struktur berikut:
-1. Header: Berisi informasi utama pengirim, penerima, nomor dokumen utama.
-2. Detail Data (Invoice / Packing List): Tabel padat berisi detail item/handling unit.
-3. Summary Page: Rekapitulasi/total dari seluruh dokumen di bagian akhir.
+1. Header: Informasi pengirim, penerima, nomor dokumen utama.
+2. Invoice Data: Tabel detail barang yang berisi harga, nilai, dan deskripsi material.
+3. Packing List Data: Tabel detail barang yang berisi nomor kemasan (pallet/carton), berat, dan dimensi.
 
 TUGAS ANDA: Tentukan rentang halaman untuk setiap kategori.
-PENTING: Gunakan field "exclude" untuk mencantumkan halaman di dalam rentang start-end yang BUKAN merupakan bagian dari kategori tersebut (misal: halaman kosong atau halaman sisa teks yang tidak relevan).
+PENTING: Gunakan field "exclude" untuk mencantumkan halaman di dalam rentang start-end yang BUKAN merupakan bagian dari kategori tersebut (misal: halaman kosong).
 
-Jawab HANYA dengan JSON murni berikut:
+Jawab HANYA dengan JSON murni:
 {
   "page_contain_header": {"start": number, "end": number, "exclude": [number]},
-  "is_document_contain_summary": boolean,
-  "document_summary_page": {"start": number, "end": number, "exclude": [number]},
   "page_contain_invoice_data": {"start": number, "end": number, "exclude": [number]},
   "page_contain_packing_list_data": {"start": number, "end": number, "exclude": [number]}
 }
 Keterangan:
-- Halaman header mencakup cover page dan halaman utama yang memuat informasi shipment/invoice/packing list.
-- Summary adalah halaman rekapitulasi/total dari dokumen di akhir. Summary merupakan Single Source of Truth untuk data item.
-- Halaman "data" adalah halaman yang memiliki tabel atau daftar barang.
-Jika suatu bagian tidak ada, berikan null.`;
+- Halaman "data" adalah semua halaman yang memiliki tabel barang.
+- Jika satu halaman berisi kedua data (Invoice & PL), cantumkan di kedua kategori.`;
 
 
 const extractPageBuffer = async (pdfDoc, startPage, endPage, exclude = []) => {
@@ -71,39 +67,40 @@ const isSameInvoice = (inv1, inv2) => {
  * Reconcile and group items for CIPL based on the new architecture.
  * Supports SSOT (Summary overrides details) and different grouping for Invoice vs PL.
  */
-const reconcileCiplData = (masterJson, summaryData = null, log = logger) => {
+const reconcileCiplData = (masterJson, log = logger) => {
   const invoiceGroups = {}; // Key: invoice_number
   const plGroups = {}; // Key: packing_list_number
 
-  // Identity logic for Schneider: Item is unique by its Line Number + Package + PL + Product Number
+  // Identity logic as per "Alur kerja (1)" diagram:
+  // Invoice matching by invoice number + product_number
   const getInvoiceItemKey = (item) => {
-    const num = String(item.number || '').trim();
-    const pkg = String(item.package_number || '').trim();
-    const pl = String(item.packing_list_number || '').trim();
+    const invNo = String(item.invoice_number || '').trim();
     const prod = String(item.prod_number || '').trim();
     
+    // Fallback: Jika product number tidak ada, tidak usah di-match (append)
+    if (!prod) {
+      return `APPEND_INV_${Math.random().toString(36).substring(2, 9)}`;
+    }
+
     let key = 'INV';
-    if (num) key += `_NUM_${num}`;
-    if (pkg) key += `_PKG_${pkg}`;
-    if (pl) key += `_PL_${pl}`;
-    if (prod) key += `_PROD_${prod}`;
-    
-    if (key === 'INV') return `ITEM_${Math.random().toString(36).substring(2, 7)}`;
+    if (invNo) key += `_INV_${invNo}`;
+    key += `_PROD_${prod}`;
     return key;
   };
 
+  // Packing List matching by packing list number + package_number
   const getPlItemKey = (item) => {
+    const plNo = String(item.packing_list_number || '').trim();
     const pkg = String(item.package_number || '').trim();
-    const num = String(item.number || '').trim();
-    const prod = String(item.prod_number || '').trim();
+    
+    // Fallback: Jika package_number tidak ada, tidak usah di-match (append)
+    if (!pkg) {
+      return `APPEND_PL_${Math.random().toString(36).substring(2, 9)}`;
+    }
 
-    // Identity for PL: Package + Line + Product
     let key = 'PL';
-    if (pkg) key += `_PKG_${pkg}`;
-    if (num) key += `_NUM_${num}`;
-    if (prod) key += `_PROD_${prod}`;
-
-    if (key === 'PL') return `ITEM_${Math.random().toString(36).substring(2, 7)}`;
+    if (plNo) key += `_PL_${plNo}`;
+    key += `_PKG_${pkg}`;
     return key;
   };
 
@@ -111,14 +108,12 @@ const reconcileCiplData = (masterJson, summaryData = null, log = logger) => {
     if (!Array.isArray(list)) return;
     for (const wrapper of list) {
       const docNo = (type === 'INV' ? wrapper.invoice_number : wrapper.packing_list_number) || 'UNKNOWN';
-
-      // Find matching group using suffix matching if necessary
+      
       let groupKey = Object.keys(targetMap).find((k) => isSameInvoice(k, docNo));
       if (!groupKey) {
         groupKey = docNo;
         targetMap[groupKey] = { data: { ...wrapper }, items: {} };
       } else {
-        // Upgrade groupKey to the longer (full) number if found
         if (docNo.length > groupKey.length) {
           targetMap[docNo] = targetMap[groupKey];
           if (type === 'INV') targetMap[docNo].data.invoice_number = docNo;
@@ -126,7 +121,7 @@ const reconcileCiplData = (masterJson, summaryData = null, log = logger) => {
           delete targetMap[groupKey];
           groupKey = docNo;
         }
-        // Merge wrapper fields
+        // Match & Update Header fields (fill nulls)
         Object.keys(wrapper).forEach((k) => {
           if (k !== 'items' && (targetMap[groupKey].data[k] === undefined || targetMap[groupKey].data[k] === null || targetMap[groupKey].data[k] === '')) {
             targetMap[groupKey].data[k] = wrapper[k];
@@ -140,10 +135,11 @@ const reconcileCiplData = (masterJson, summaryData = null, log = logger) => {
           if (!targetMap[groupKey].items[itemKey]) {
             targetMap[groupKey].items[itemKey] = { ...item };
           } else {
-            // Merge item fields: current values override only if previous was null/empty
+            // MATCH & UPDATE: Isi yang null dari data baru
             Object.keys(item).forEach((k) => {
               if (item[k] !== null && item[k] !== undefined && item[k] !== '') {
-                if (targetMap[groupKey].items[itemKey][k] === undefined || targetMap[groupKey].items[itemKey][k] === null || targetMap[groupKey].items[itemKey][k] === '') {
+                const existingVal = targetMap[groupKey].items[itemKey][k];
+                if (existingVal === undefined || existingVal === null || existingVal === '') {
                   targetMap[groupKey].items[itemKey][k] = item[k];
                 }
               }
@@ -154,18 +150,11 @@ const reconcileCiplData = (masterJson, summaryData = null, log = logger) => {
     }
   };
 
-  // 1. Process Summary Data (SSOT) if exists
-  if (summaryData) {
-    log.info({ event: 'cipl_ssot_applied' }, 'Menggunakan data Summary sebagai Single Source of Truth');
-    processList(summaryData.pl_list, plGroups, getPlItemKey, 'PL');
-    processList(summaryData.invoice_list, invoiceGroups, getInvoiceItemKey, 'INV');
-  }
-
-  // 2. Process Detailed Data
+  // Process all extracted data
   processList(masterJson.invoice_list, invoiceGroups, getInvoiceItemKey, 'INV');
   processList(masterJson.pl_list, plGroups, getPlItemKey, 'PL');
 
-  // 3. Rebuild masterJson
+  // Rebuild masterJson
   masterJson.invoice_list = Object.values(invoiceGroups).map((g) => ({
     ...g.data,
     items: Object.values(g.items)
@@ -203,23 +192,22 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
       }
     });
 
-    // Helper untuk menyatukan list berdasarkan invoice_number
+    // Helper untuk menyatukan list berdasarkan ID dokumen
     const mergeList = (listKey) => {
       if (!Array.isArray(source[listKey])) return;
       if (!target[listKey]) target[listKey] = [];
 
+      const idKey = listKey === 'invoice_list' ? 'invoice_number' : 'packing_list_number';
+
       for (const srcItem of source[listKey]) {
-        const invNo = srcItem.invoice_number || 'UNKNOWN';
-        // Cari targetItem menggunakan isSameInvoice
-        let targetItem = target[listKey].find((t) => isSameInvoice(t.invoice_number || 'UNKNOWN', invNo));
+        const docId = srcItem[idKey] || 'UNKNOWN';
+        let targetItem = target[listKey].find((t) => isSameInvoice(t[idKey] || 'UNKNOWN', docId));
 
         if (!targetItem) {
-          // Clone srcItem and make sure items is an array
           targetItem = { ...srcItem };
           targetItem.items = Array.isArray(srcItem.items) ? [...srcItem.items] : [];
           target[listKey].push(targetItem);
         } else {
-          // Merge properti non-array dari wrapper
           Object.keys(srcItem).forEach((k) => {
             if (k !== 'items' && !Array.isArray(srcItem[k])) {
               if (targetItem[k] === undefined || targetItem[k] === null || targetItem[k] === '') {
@@ -227,7 +215,6 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
               }
             }
           });
-          // Concat items (Gabungkan item baris demi baris, jangan ditimpa by index)
           if (Array.isArray(srcItem.items)) {
             if (!Array.isArray(targetItem.items)) targetItem.items = [];
             targetItem.items = targetItem.items.concat(srcItem.items);
@@ -305,15 +292,35 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
   log.info({ event: 'cipl_boundary_detected', boundary }, 'Boundary terdeteksi');
 
   // Fase 2: Global Context Extraction (Header)
-  const headerStart = boundary?.page_contain_header?.start || 1;
-  const headerEnd = boundary?.page_contain_header?.end || Math.min(3, totalPages);
+  const headerStart = boundary?.page_contain_header?.start;
+  const headerEnd = boundary?.page_contain_header?.end;
   const headerExclude = boundary?.page_contain_header?.exclude || [];
 
-  const extraContextPage = (boundary?.page_contain_invoice_data?.start || boundary?.page_contain_packing_list_data?.start);
-  const headerScanEnd = extraContextPage && extraContextPage > headerEnd ? Math.min(headerEnd + 1, totalPages) : headerEnd;
+  const invStart = boundary?.page_contain_invoice_data?.start;
+  const invEnd = boundary?.page_contain_invoice_data?.end || totalPages;
+  const invExclude = boundary?.page_contain_invoice_data?.exclude || [];
 
-  log.info({ event: 'cipl_extracting_header' }, `Fase 2: Mengekstrak Header hal ${headerStart}-${headerScanEnd}`);
-  const masterJson = await processPageRange(headerStart, headerScanEnd, headerExclude, true) || {};
+  const plStart = boundary?.page_contain_packing_list_data?.start;
+  const plEnd = boundary?.page_contain_packing_list_data?.end || totalPages;
+  const plExclude = boundary?.page_contain_packing_list_data?.exclude || [];
+  
+  // Sesuai diagram: Jika tidak ada header, ambil halaman pertama data untuk scan bersamaan
+  let hStart = headerStart || 1;
+  let hEnd = headerEnd || 1;
+  
+  if (!headerStart) {
+    const firstDataPage = Math.min(invStart || totalPages, plStart || totalPages);
+    hStart = firstDataPage;
+    hEnd = firstDataPage;
+  } else {
+    // Jika ada header, ambil max 3 halaman header + 1 halaman transisi data (jika perlu)
+    hEnd = Math.min(headerEnd, 3);
+    const extraContextPage = Math.min(invStart || totalPages, plStart || totalPages);
+    if (extraContextPage > hEnd) hEnd = Math.min(hEnd + 1, totalPages);
+  }
+
+  log.info({ event: 'cipl_extracting_header' }, `Fase 2: Mengekstrak Header hal ${hStart}-${hEnd}`);
+  const masterJson = await processPageRange(hStart, hEnd, headerExclude, true) || {};
   if (!masterJson.invoice_list) masterJson.invoice_list = [];
   if (!masterJson.pl_list) masterJson.pl_list = [];
 
@@ -321,28 +328,21 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
     buyer_name: masterJson.buyer_name,
     seller_name: masterJson.seller_name,
     packing_list_number: masterJson.packing_list_number,
-    // Tersedia informasi invoice dasar tapi tidak membatasi AI menemukan invoice baru
     initial_invoices: (masterJson.invoice_list || []).map((inv) => inv.invoice_number)
   };
 
   // Fase 3: Invoice Data Extraction
   // Fallback: Jika boundary gagal, scan seluruh halaman sebagai invoice data (minus header)
-  const invStart = boundary?.page_contain_invoice_data?.start || headerScanEnd + 1;
-  const invEnd = boundary?.page_contain_invoice_data?.end || totalPages;
-  const invExclude = boundary?.page_contain_invoice_data?.exclude || [];
+  const finalInvStart = invStart || hEnd + 1;
 
-  if (invStart <= totalPages) {
-    log.info({ event: 'cipl_extracting_invoice_data' }, `Fase 3: Mengekstrak Invoice Data hal ${invStart}-${invEnd}`);
+  if (finalInvStart <= totalPages) {
+    log.info({ event: 'cipl_extracting_invoice_data' }, `Fase 3: Mengekstrak Invoice Data hal ${finalInvStart}-${invEnd}`);
     // Gunakan Full Prompt agar format CSV dan struktur JSON konsisten dengan masterJson
-    const invData = await processPageRangeChunked(invStart, invEnd, invExclude, true, globalContext);
+    const invData = await processPageRangeChunked(finalInvStart, invEnd, invExclude, true, globalContext);
     mergeCiplChunks(masterJson, invData);
   }
 
   // Fase 4: Packing List Data Extraction
-  const plStart = boundary?.page_contain_packing_list_data?.start;
-  const plEnd = boundary?.page_contain_packing_list_data?.end;
-  const plExclude = boundary?.page_contain_packing_list_data?.exclude || [];
-
   // Hanya jalankan jika boundary menemukan area PL yang spesifik, atau jika invoice data tidak ditemukan
   if (plStart && plEnd) {
     log.info({ event: 'cipl_extracting_pl_data' }, `Fase 4: Mengekstrak Packing List Data hal ${plStart}-${plEnd}`);
@@ -350,18 +350,8 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
     mergeCiplChunks(masterJson, plData);
   }
 
-  // Fase 5: Summary Extraction (SSOT)
-  let summaryData = null;
-  if (boundary.is_document_contain_summary && boundary.document_summary_page?.start) {
-    const sStart = boundary.document_summary_page.start;
-    const sEnd = boundary.document_summary_page.end || sStart;
-    const sExclude = boundary.document_summary_page.exclude || [];
-    log.info({ event: 'cipl_extracting_summary' }, `Fase 5: Mengekstrak Summary (SSOT) hal ${sStart}-${sEnd}`);
-    summaryData = await processPageRangeChunked(sStart, sEnd, sExclude, true, globalContext);
-  }
-
-  // Final Reconciliation & BE Grouping
-  reconcileCiplData(masterJson, summaryData, log);
+  // Final Reconciliation & BE Grouping (Matching logic inside)
+  reconcileCiplData(masterJson, log);
 
   // ── DETERMINISTIC POST-PROCESSING ──────────────────────────────────────────
 
