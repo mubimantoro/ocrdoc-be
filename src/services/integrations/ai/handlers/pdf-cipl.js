@@ -75,26 +75,34 @@ const reconcileCiplData = (masterJson, summaryData = null, log = logger) => {
   const invoiceGroups = {}; // Key: invoice_number
   const plGroups = {}; // Key: packing_list_number
 
-  // Identity logic for Schneider: Item is unique by its Line Number + Product Number
+  // Identity logic for Schneider: Item is unique by its Line Number + Package + PL + Product Number
   const getInvoiceItemKey = (item) => {
     const num = String(item.number || '').trim();
+    const pkg = String(item.package_number || '').trim();
+    const pl = String(item.packing_list_number || '').trim();
     const prod = String(item.prod_number || '').trim();
-    // Unique key: Combine line number and product to avoid overwriting same-product lines
-    if (num && prod) return `INV_${num}_${prod}`;
-    return num ? `INV_NUM_${num}` : (prod ? `INV_PROD_${prod}` : `ITEM_${Math.random().toString(36).substring(2, 7)}`);
+    
+    let key = 'INV';
+    if (num) key += `_NUM_${num}`;
+    if (pkg) key += `_PKG_${pkg}`;
+    if (pl) key += `_PL_${pl}`;
+    if (prod) key += `_PROD_${prod}`;
+    
+    if (key === 'INV') return `ITEM_${Math.random().toString(36).substring(2, 7)}`;
+    return key;
   };
 
   const getPlItemKey = (item) => {
     const pkg = String(item.package_number || '').trim();
     const num = String(item.number || '').trim();
     const prod = String(item.prod_number || '').trim();
-    
+
     // Identity for PL: Package + Line + Product
     let key = 'PL';
     if (pkg) key += `_PKG_${pkg}`;
     if (num) key += `_NUM_${num}`;
     if (prod) key += `_PROD_${prod}`;
-    
+
     if (key === 'PL') return `ITEM_${Math.random().toString(36).substring(2, 7)}`;
     return key;
   };
@@ -103,7 +111,7 @@ const reconcileCiplData = (masterJson, summaryData = null, log = logger) => {
     if (!Array.isArray(list)) return;
     for (const wrapper of list) {
       const docNo = (type === 'INV' ? wrapper.invoice_number : wrapper.packing_list_number) || 'UNKNOWN';
-      
+
       // Find matching group using suffix matching if necessary
       let groupKey = Object.keys(targetMap).find((k) => isSameInvoice(k, docNo));
       if (!groupKey) {
@@ -254,7 +262,7 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
     if (!start || !end || start > end) return null;
     const CHUNK_SIZE = 3; // Reduced for more thorough extraction
     const promises = [];
-    
+
     // Filter out excluded pages before chunking
     const allPages = [];
     for (let i = start; i <= end; i++) {
@@ -300,7 +308,7 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
   const headerStart = boundary?.page_contain_header?.start || 1;
   const headerEnd = boundary?.page_contain_header?.end || Math.min(3, totalPages);
   const headerExclude = boundary?.page_contain_header?.exclude || [];
-  
+
   const extraContextPage = (boundary?.page_contain_invoice_data?.start || boundary?.page_contain_packing_list_data?.start);
   const headerScanEnd = extraContextPage && extraContextPage > headerEnd ? Math.min(headerEnd + 1, totalPages) : headerEnd;
 
@@ -322,7 +330,7 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
   const invStart = boundary?.page_contain_invoice_data?.start || headerScanEnd + 1;
   const invEnd = boundary?.page_contain_invoice_data?.end || totalPages;
   const invExclude = boundary?.page_contain_invoice_data?.exclude || [];
-  
+
   if (invStart <= totalPages) {
     log.info({ event: 'cipl_extracting_invoice_data' }, `Fase 3: Mengekstrak Invoice Data hal ${invStart}-${invEnd}`);
     // Gunakan Full Prompt agar format CSV dan struktur JSON konsisten dengan masterJson
@@ -334,7 +342,7 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
   const plStart = boundary?.page_contain_packing_list_data?.start;
   const plEnd = boundary?.page_contain_packing_list_data?.end;
   const plExclude = boundary?.page_contain_packing_list_data?.exclude || [];
-  
+
   // Hanya jalankan jika boundary menemukan area PL yang spesifik, atau jika invoice data tidak ditemukan
   if (plStart && plEnd) {
     log.info({ event: 'cipl_extracting_pl_data' }, `Fase 4: Mengekstrak Packing List Data hal ${plStart}-${plEnd}`);
@@ -373,9 +381,9 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
 
   // [3] Final Cleanup: Remove empty items and map available invoices to pl_list
   if (Array.isArray(masterJson.pl_list)) {
-    masterJson.pl_list.forEach(pl => {
+    masterJson.pl_list.forEach((pl) => {
       if (!pl.invoice_number || (Array.isArray(pl.invoice_number) && pl.invoice_number.length === 0)) {
-        pl.invoice_number = (masterJson.invoice_list || []).map(inv => inv.invoice_number).filter(Boolean);
+        pl.invoice_number = (masterJson.invoice_list || []).map((inv) => inv.invoice_number).filter(Boolean);
       }
     });
   }

@@ -39,7 +39,7 @@ Hasilkan JSON dengan struktur berikut. Gunakan 'items_csv' (String) untuk mengga
 }
 
 2. FORMAT items_csv (KRITIKAL):
-- FORMAT INVOICE ('invoice_list.items_csv'): number|prod_number|description|quantity|uom|unit_price|amount|currency|origin|origin_code|hs_code|vendor_name|vendor_number|packaging_type_item
+- FORMAT INVOICE ('invoice_list.items_csv'): number|package_number|packing_list_number|prod_number|description|quantity|uom|unit_price|amount|currency|origin|origin_code|hs_code|vendor_name|vendor_number|packaging_type_item
 - FORMAT PACKING LIST ('pl_list.items_csv'): number|package_number|prod_number|description|quantity|quantity_unit|net_weight|gross_weight|measurement|packaging_qty|packaging_unit|packaging_type|brand|origin
 
 CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kolom ke-11) pada PL

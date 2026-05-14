@@ -17,7 +17,7 @@
     "description": "Array of invoices",
     "fields": ["invoice_number", "invoice_date"],
     "items": [
-      "number", "prod_number", "description", "quantity", "uom", "unit_price", "amount", "currency", 
+      "number", "package_number", "packing_list_number", "prod_number", "description", "quantity", "uom", "unit_price", "amount", "currency", 
       "origin", "origin_code", "hs_code", "vendor_name", "vendor_number", "packaging_type_item"
     ]
   },

@@ -97,9 +97,9 @@ export const mergeArraysDeep = (master, batch) => {
         batchVal.forEach((batchEntry) => {
           const idField = key === 'invoice_list' ? 'invoice_number' : 'packing_list_number';
           const batchId = batchEntry[idField];
-          
+
           // Find existing entry in master
-          let masterEntry = master[key].find(m => {
+          const masterEntry = master[key].find((m) => {
             const masterId = m[idField];
             if (!masterId || !batchId) return false;
             // Handle array for invoice_number in pl_list
@@ -123,7 +123,7 @@ export const mergeArraysDeep = (master, batch) => {
               masterEntry['items_csv'] = [...masterCsv, ...batchCsv];
             }
             // Merge other fields if master's are null
-            Object.keys(batchEntry).forEach(k => {
+            Object.keys(batchEntry).forEach((k) => {
               if (k !== 'items' && k !== 'items_csv' && (masterEntry[k] === null || masterEntry[k] === undefined || masterEntry[k] === '')) {
                 masterEntry[k] = batchEntry[k];
               }
@@ -268,7 +268,7 @@ export const parseItemsCsv = (data, docCode) => {
   };
 
   if (docCode === '001') {
-    processList(data['invoice_list'], ['number', 'prod_number', 'description', 'quantity', 'uom', 'unit_price', 'amount', 'currency', 'origin', 'origin_code', 'hs_code', 'vendor_name', 'vendor_number', 'packaging_type_item']);
+    processList(data['invoice_list'], ['number', 'package_number', 'packing_list_number', 'prod_number', 'description', 'quantity', 'uom', 'unit_price', 'amount', 'currency', 'origin', 'origin_code', 'hs_code', 'vendor_name', 'vendor_number', 'packaging_type_item']);
     processList(data['pl_list'], ['number', 'package_number', 'prod_number', 'description', 'quantity', 'quantity_unit', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'packaging_unit', 'packaging_type', 'brand', 'origin']);
   } else if (docCode === '217') {
 
