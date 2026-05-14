@@ -109,7 +109,11 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
 
     const isShortInvoice = docCode === '380' && hasItemList && numPagesPdf <= 5;
 
-    const forceParallel = isHeavyDocument || isSpecialExcelPdf;
+    // Dokumen yang WAJIB sequential demi konteks (BL & AWB)
+    const SEQUENTIAL_CODES = ['705', '740'];
+    const isSequentialForced = SEQUENTIAL_CODES.includes(docCode);
+
+    const forceParallel = (isHeavyDocument || isSpecialExcelPdf) && !isSequentialForced;
 
     log.debug({
       event: 'routing_decision',
