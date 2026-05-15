@@ -20,7 +20,7 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument, {
   customSiteTitle: 'API Documentation',
   swaggerOptions: { persistAuthorization: true }
 }));
-app.use('/uploads', express.static('uploads'));
+
 app.use('/api', routes);
 app.use(ErrorHandler);
 
