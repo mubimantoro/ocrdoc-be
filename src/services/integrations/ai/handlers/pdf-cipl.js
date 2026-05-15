@@ -133,7 +133,7 @@ const reconcileCiplData = (masterJson, log = logger) => {
         for (const item of wrapper.items) {
           const itemKey = groupingFn(item);
           if (!targetMap[groupKey].items[itemKey]) {
-            targetMap[groupKey].items[itemKey] = { ...item };
+            targetMap[groupKey].items[itemKey] = { ...item, _tmp_key: itemKey };
           } else {
             // MATCH & UPDATE: Isi yang null dari data baru
             Object.keys(item).forEach((k) => {
@@ -159,8 +159,8 @@ const reconcileCiplData = (masterJson, log = logger) => {
   const deduplicateGhostItems = (groups) => {
     Object.values(groups).forEach(group => {
       const items = Object.values(group.items);
-      const withId = items.filter(it => !it._tmp_key.startsWith('APPEND'));
-      const appendOnly = items.filter(it => it._tmp_key.startsWith('APPEND'));
+      const withId = items.filter(it => !it._tmp_key?.startsWith('APPEND'));
+      const appendOnly = items.filter(it => it._tmp_key?.startsWith('APPEND'));
 
       appendOnly.forEach(ghost => {
         const match = withId.find(real => 
@@ -189,11 +189,17 @@ const reconcileCiplData = (masterJson, log = logger) => {
   // Rebuild masterJson
   masterJson.invoice_list = Object.values(invoiceGroups).map((g) => ({
     ...g.data,
-    items: Object.values(g.items)
+    items: Object.values(g.items).map((it) => {
+      const { _tmp_key, ...rest } = it;
+      return rest;
+    })
   }));
   masterJson.pl_list = Object.values(plGroups).map((g) => ({
     ...g.data,
-    items: Object.values(g.items)
+    items: Object.values(g.items).map((it) => {
+      const { _tmp_key, ...rest } = it;
+      return rest;
+    })
   }));
 };
 
