@@ -252,9 +252,16 @@ export const parseItemsCsv = (data, docCode) => {
               const cleanedStr = val.toString().replace(/[^\d.-]/g, '');
               val = cleanedStr !== '' ? Number(cleanedStr) : null;
             }
-            // Sanitizer Layer 2
+            // Sanitizer Layer 2: Rigorous Normalization
             else if (['uom', 'quantity_unit'].includes(k) && val) {
               val = val.toUpperCase();
+              if (['PC', 'PCE', 'PIECE', 'PCS.'].includes(val)) val = 'PCS';
+              if (['KG', 'KILO', 'KGS.'].includes(val)) val = 'KGS';
+            } else if (['packaging_unit', 'packaging_type_item'].includes(k) && val) {
+              val = val.toUpperCase();
+              if (['BOX', 'BX.'].includes(val)) val = 'BX';
+              if (['CARTON', 'CTN', 'CT.'].includes(val)) val = 'CT';
+              if (['PALLET', 'PLT'].includes(val)) val = 'PL';
             } else if (k === 'description' && val) {
               val = val.replace(/\s*\(\s*/g, ' (').replace(/\s*\)/g, ')').trim();
             }

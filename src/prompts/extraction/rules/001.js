@@ -104,9 +104,15 @@ CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kol
    - Origin: Ekstrak nama utuh (contoh: CHINA) dan ISO Alpha-2 (contoh: CN). 
    - Incoterms ('inco_terms'): Ekstrak NILAI SEPENUHNYA persis seperti yang tertulis di dokumen.
 
-7. PETA LOKASI DATA & SANITIZATION:
+7. NORMALISASI & INTEGRITAS DATA (WAJIB):
+   Untuk menjaga konsistensi antar halaman/chunk (menghindari variasi seperti PC vs PCS), Anda WAJIB mengikuti standar normalisasi berikut:
+   - uom / quantity_unit: Gunakan SELALU 'PCS' (untuk pieces), 'KGS' (untuk kilograms), 'MTR' (untuk meters). Jangan gunakan 'PC' atau 'PCE'.
+   - packaging_unit: Gunakan SELALU 'BX' (untuk Box), 'CT' (untuk Carton), 'PL' (untuk Pallet), 'SET' (untuk Set).
+   - packaging_type: Ekstrak tipe fisik utuh (contoh: 'CARTON' bukan hanya 'CT').
+   - Identity Keys: 'prod_number' dan 'package_number' adalah kunci utama sistem. DILARANG KERAS mengabaikan nomor ini jika terlihat di dokumen. Pastikan penulisan nomor identitas ini konsisten di setiap baris yang merujuk pada barang yang sama.
+
+8. PETA LOKASI DATA & SANITIZATION:
    - Kolom 'prod_number': HANYA ekstrak Product/Material Number/Part Number.
    - Kolom 'number' (Urutan): Ekstrak hanya jika angka tertulis EKSPLISIT di tabel.
-   - Kolom 'uom' & 'quantity_unit': SELALU gunakan HURUF KAPITAL (contoh: KGS, PCS).
    - Sanitasi Angka: Hilangkan simbol satuan dan pemisah ribuan (koma). Format Number murni (misal: 1250.50).
 `;

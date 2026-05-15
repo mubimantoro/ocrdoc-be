@@ -154,6 +154,38 @@ const reconcileCiplData = (masterJson, log = logger) => {
   processList(masterJson.invoice_list, invoiceGroups, getInvoiceItemKey, 'INV');
   processList(masterJson.pl_list, plGroups, getPlItemKey, 'PL');
 
+  // 3. Post-Merge Ghost De-duplication: Bersihkan item 'APPEND' yang sebenarnya duplikat dari item yang punya ID
+  // Logika: Jika ada item APPEND yang punya (desc + qty + origin) sama persis dengan item ber-ID di grup yang sama, gabungkan.
+  const deduplicateGhostItems = (groups) => {
+    Object.values(groups).forEach(group => {
+      const items = Object.values(group.items);
+      const withId = items.filter(it => !it._tmp_key.startsWith('APPEND'));
+      const appendOnly = items.filter(it => it._tmp_key.startsWith('APPEND'));
+
+      appendOnly.forEach(ghost => {
+        const match = withId.find(real => 
+          real.description === ghost.description && 
+          real.quantity === ghost.quantity &&
+          real.origin === ghost.origin
+        );
+        if (match) {
+          log.info({ event: 'cipl_ghost_merged', desc: ghost.description }, 'Menghapus ghost item duplikat (Match by Desc+Qty)');
+          // Merge null fields from ghost to real
+          Object.keys(ghost).forEach(k => {
+            if (match[k] === undefined || match[k] === null || match[k] === '') {
+              match[k] = ghost[k];
+            }
+          });
+          // Hapus ghost dari group
+          delete group.items[ghost._tmp_key];
+        }
+      });
+    });
+  };
+
+  deduplicateGhostItems(invoiceGroups);
+  deduplicateGhostItems(plGroups);
+
   // Rebuild masterJson
   masterJson.invoice_list = Object.values(invoiceGroups).map((g) => ({
     ...g.data,
@@ -328,7 +360,12 @@ export const processCiplPdfExtraction = async (fileBuffer, docCode, prompt, json
     buyer_name: masterJson.buyer_name,
     seller_name: masterJson.seller_name,
     packing_list_number: masterJson.packing_list_number,
-    initial_invoices: (masterJson.invoice_list || []).map((inv) => inv.invoice_number)
+    initial_invoices: (masterJson.invoice_list || []).map((inv) => inv.invoice_number),
+    // Memberikan petunjuk item yang sudah ditemukan di header/page 1 untuk menjaga konsistensi ID
+    initial_items: [
+      ...(masterJson.invoice_list || []).flatMap(inv => (inv.items || []).map(it => it.prod_number)),
+      ...(masterJson.pl_list || []).flatMap(pl => (pl.items || []).map(it => it.package_number))
+    ].filter(Boolean).slice(0, 20) // Limit to avoid token bloat
   };
 
   // Fase 3: Invoice Data Extraction
