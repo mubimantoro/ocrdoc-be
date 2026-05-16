@@ -1,13 +1,3 @@
-/**
- * Prompt Injection Khusus untuk CIPL (Combined Invoice & Packing List)
- * Menggunakan teknik CSV Stringification untuk Token Diet ekstrem,
- * ditambah logika Cross-Referencing untuk Matematika Agregat Logistik.
- */
-/**
- * Prompt Injection Khusus untuk CIPL (Combined Invoice & Packing List)
- * Menggunakan teknik CSV Stringification untuk Token Diet ekstrem,
- * ditambah logika Cross-Referencing untuk Matematika Agregat Logistik.
- */
 export const instructions = `
 >>> DIREKTIF KHUSUS DOKUMEN: CIPL (COMBINED INVOICE PACKING LIST - 001) <<<
 ANDA ADALAH DOMAIN EXPERT LOGISTIK KARGO INTERNASIONAL DENGAN SPESIALISASI PEMBACAAN DOKUMEN
@@ -18,7 +8,6 @@ INCOTERMS, HS CODE, DAN KONVENSI PENOMORAN KEMASAN STANDAR INDUSTRI. BERIKUT ATU
 Hasilkan JSON dengan struktur berikut. Gunakan 'items_csv' (String) untuk menggantikan array barang 'items' guna menghemat token.
 {
   "_reasoning": "Singkat saja (max 1 kalimat)",
-  "packing_list_number": "...",
   "packing_list_date": "YYYY-MM-DD",
   ...field_root_lainnya...,
   "invoice_list": [
@@ -39,10 +28,13 @@ Hasilkan JSON dengan struktur berikut. Gunakan 'items_csv' (String) untuk mengga
 }
 
 2. FORMAT items_csv (KRITIKAL):
-- FORMAT INVOICE ('invoice_list.items_csv'): number|package_number|packing_list_number|prod_number|description|quantity|uom|unit_price|amount|currency|origin|origin_code|hs_code|vendor_name|vendor_number|packaging_type_item
-- FORMAT PACKING LIST ('pl_list.items_csv'): number|package_number|prod_number|description|quantity|quantity_unit|net_weight|gross_weight|measurement|packaging_qty|packaging_unit|packaging_type|brand|origin
+- FORMAT INVOICE ('invoice_list.items_csv'):
+  number|prod_number|description|quantity|uom|unit_price|amount|currency|origin|origin_code|hs_code|vendor_name|vendor_number|packaging_type_item
 
-CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kolom ke-11) pada PL
+- FORMAT PACKING LIST ('pl_list.items_csv'):
+  number|package_number|prod_number|description|quantity|quantity_unit|net_weight|gross_weight|measurement|packaging_qty|packaging_unit|packaging_type|brand|origin
+
+CATATAN URUTAN PL: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kolom ke-11)
   selalu berada di posisi yang benar. Jangan tertukar posisinya.
 
 * Aturan CSV Universal:
@@ -58,6 +50,7 @@ CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kol
      Angka kuantitas sudah ditangkap oleh field 'packaging_total' yang terpisah.
    - 'package_number' (di pl_list): Ekstrak nomor Handling Unit / Case ID / Pallet ID (contoh: RDA022250002488).
    - 'packaging_type_item' (di invoice_list): Ekstrak jenis kemasan spesifik baris tersebut (contoh: BX, SA).
+     Isi null jika item berbagi kemasan dengan item lain pada baris yang sama.
 
 4. LOGIKA CROSS-REFERENCING (KHUSUS pl_list.items_csv):
    CIPL umumnya memiliki dua lapisan tabel: "Tabel Summary per Invoice/Material" dan
@@ -70,6 +63,8 @@ CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kol
       - PRIORITAS 2 (Kalkulasi Manual): Jika tidak ada Tabel Summary berat, identifikasi
         semua Handling Unit / Package yang memuat item tersebut dari Tabel Detail,
         lalu JUMLAHKAN (SUM) berat masing-masing Handling Unit tersebut.
+      - WAJIB: 'gross_weight' HARUS selalu diisi dengan angka. Gunakan 0 jika item
+        berbagi kemasan dengan item lain dan berat tidak dapat dipisahkan.
  
    B. JUMLAH KEMASAN ('packaging_qty') — SUMBER DATA WAJIB BERURUTAN:
       - PRIORITAS 1 (Tabel Summary): Cari kolom bernama "Box", "Carton", "No. of Pkg",
@@ -86,19 +81,31 @@ CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kol
       - packaging_unit: Unit kuantitas kemasan (contoh: BOX, CARTON, BAG).
       - packaging_type: Jenis kemasan lengkap (contoh: Cartons$TP765).
 
-5. KONSISTENSI HARGA & PEMISAHAN DOMAIN (INVOICE vs PL):
- 
-   A. PL LIST — SUMBER DATA HARGA (WAJIB BERURUTAN):
-      - 'amount' di pl_list: WAJIB diisi dari kolom "Net Value" (atau "Total Value", "Amount")
-        pada Tabel Summary. Ini bukan field opsional.
- 
-      - ATURAN MATCHING KRITIS — WAJIB MATCH BERDASARKAN INVOICE NUMBER:
-        Satu material/description yang sama dapat muncul di LEBIH DARI SATU invoice dengan harga berbeda. 
-        Karena itu, kamu WAJIB mencocokkan 'amount' berdasarkan 'invoice_number'.
+4A. FORMAT SAP/ERP — SATU DELIVERY NUMBER = SATU pl_list ENTRY (KRITIKAL):
+   Beberapa dokumen CIPL (Schneider Electric, dll.) menggunakan format SAP/ERP di mana
+   SETIAP BARIS ITEM memiliki DELIVERY NUMBER / NOMOR PACKING LIST TERSENDIRI.
 
-    B. INVOICE LIST (CURRENCY MISMATCH GUARD):
-       Perhatikan header kolom harga! Jika 'Unit Price' menggunakan mata uang yang BERBEDA dengan 'Amount', 
-       dan kamu mengekstrak Amount dalam USD, maka kamu DILARANG mengekstrak Unit Price tersebut.
+   CARA IDENTIFIKASI format ini:
+   - Tabel PL memiliki kolom "Delivery No.", "Deliv.", atau "PL No." yang BERBEDA
+     nilainya di setiap baris (bukan satu nomor untuk semua baris dalam seksi)
+   - Nomor tersebut biasanya 10 digit (contoh: "2216157132", "2216159269")
+   - Setiap nomor biasanya hanya terkait dengan 1-3 item
+
+   ATURAN EKSTRAKSI (WAJIB jika format ini terdeteksi):
+   1. SATU ENTRY PER DELIVERY NUMBER: Setiap baris delivery = satu pl_list entry terpisah.
+      'packing_list_number' = delivery number dari kolom "Deliv." / "Delivery No." PADA BARIS ITU.
+   2. JANGAN gunakan nomor header tabel (seperti "128887") sebagai packing_list_number.
+      Header nomor pendek bukan delivery number individual.
+   3. 'package_number' di dalam items: Isi dengan barcode/handling unit number yang BERBEDA
+      dari packing_list_number (biasanya 18 digit: "689943561067537692").
+      JANGAN isi package_number dengan delivery number 10-digit yang sudah jadi packing_list_number.
+   4. Jika satu delivery number memiliki lebih dari satu item (jarang), buat SATU entry
+      dengan multiple items di bawah delivery number yang sama.
+
+5. CURRENCY MISMATCH GUARD (INVOICE LIST):
+   Perhatikan header kolom harga! Jika 'Unit Price' menggunakan mata uang yang BERBEDA
+   dengan 'Amount', dan kamu mengekstrak Amount dalam USD, maka kamu DILARANG
+   mengekstrak Unit Price tersebut. Biarkan kolom unit_price kosong (||).
 
 6. LOGIKA ASAL NEGARA (ORIGIN) & INCOTERMS:
    - Origin: Ekstrak nama utuh (contoh: CHINA) dan ISO Alpha-2 (contoh: CN). 
@@ -106,13 +113,19 @@ CATATAN URUTAN: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kol
 
 7. NORMALISASI & INTEGRITAS DATA (WAJIB):
    Untuk menjaga konsistensi antar halaman/chunk (menghindari variasi seperti PC vs PCS), Anda WAJIB mengikuti standar normalisasi berikut:
-   - uom / quantity_unit: Gunakan SELALU 'PCS' (untuk pieces), 'KGS' (untuk kilograms), 'MTR' (untuk meters). Jangan gunakan 'PC' atau 'PCE'.
+   - uom / quantity_unit: Gunakan SELALU 'PCS' (untuk pieces), 'KGS' (untuk kilograms), 'MTR' (untuk meters). Jangan gunakan 'PC', 'PCE', atau 'PCE'.
    - packaging_unit: Gunakan SELALU 'BX' (untuk Box), 'CT' (untuk Carton), 'PL' (untuk Pallet), 'SET' (untuk Set).
    - packaging_type: Ekstrak tipe fisik utuh (contoh: 'CARTON' bukan hanya 'CT').
    - Identity Keys: 'prod_number' dan 'package_number' adalah kunci utama sistem. DILARANG KERAS mengabaikan nomor ini jika terlihat di dokumen. Pastikan penulisan nomor identitas ini konsisten di setiap baris yang merujuk pada barang yang sama.
 
 8. PETA LOKASI DATA & SANITIZATION:
    - Kolom 'prod_number': HANYA ekstrak Product/Material Number/Part Number.
-   - Kolom 'number' (Urutan): Ekstrak hanya jika angka tertulis EKSPLISIT di tabel.
+     DILARANG KERAS mengisi prod_number dengan delivery number / nomor pengiriman.
+     Delivery number / nomor PL (10 digit angka, contoh: "2216158334") adalah NOMOR SISTEM
+     LOGISTIK — BUKAN product number. Jika description item mengandung product number
+     di awalnya (contoh: "LC1D12BD-D (SPHINX) 3P CONT..."), ekstrak "LC1D12BD-D" sebagai
+     prod_number, BUKAN nomor 10 digit yang ada di kolom delivery.
+   - Kolom 'number' (Urutan): Ekstrak hanya jika angka tertulis EKSPLISIT di tabel. Selalu integer.
    - Sanitasi Angka: Hilangkan simbol satuan dan pemisah ribuan (koma). Format Number murni (misal: 1250.50).
+   - 'measurement' (Dimensi): Ekstrak sebagai string format PxLxT dalam CM (contoh: "80X60X75"). JANGAN ubah ke angka.
 `;

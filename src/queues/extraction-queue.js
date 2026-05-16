@@ -17,6 +17,7 @@ import ExtractionJobRepositories from '../services/documents/repositories/extrac
 import EavRepositories from '../services/eav/repositories/eav-repositories.js';
 import ExtractionResultRepositories from '../services/documents/repositories/extraction-result-repositories.js';
 import logger from '../config/logger.js';
+import pool from '../config/database.js';
 // import { webhookQueue } from './webhook.queue.js';
 
 const connection = {
@@ -78,7 +79,19 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
       else actualMimeType = 'application/pdf';
     }
 
-    const extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName, isExcelToPdf, log);
+    const keepAliveInterval = setInterval(() => {
+      pool.query('SELECT 1').catch(() => {});
+      log.debug({ event: 'db_heartbeat' }, 'Mencegah DB idle timeout...');
+    }, 45000); // Ping TCP setiap 45 detik
+
+    let extracted;
+    try {
+      extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName, isExcelToPdf, log);
+    } finally {
+      // WAJIB matikan interval saat AI selesai agar tidak memory leak
+      clearInterval(keepAliveInterval);
+    }
+
     const durationMs = Date.now() - startProcessTime;
 
     log.info({

@@ -2,32 +2,78 @@
   "confidence_score": "INSTRUCTION: Berikan skor dari 0.000 hingga 1.000 seberapa yakin Anda dengan hasil ekstraksi dokumen ini. Jika buram atau banyak data terpotong, berikan skor rendah (misal 0.500)",
   "doc_code": "001",
   "doc_name": "CIPL",
-  "fields": [
-    "packing_list_number", "packing_list_date",
-    "seller_name", "seller_address", "seller_country", "seller_country_code", "seller_phone",
-    "buyer_name", "buyer_address", "buyer_country", "buyer_country_code", "buyer_phone", "buyer_tax",
-    "ship_to", "ship_to_city",
+   "fields": [
+    "packing_list_date",
+    "seller_name",
+    "seller_address",
+    "seller_country",
+    "seller_country_code",
+    "seller_phone",
+    "buyer_name",
+    "buyer_address",
+    "buyer_country",
+    "buyer_country_code",
+    "buyer_phone",
+    "buyer_tax",
+    "ship_to",
+    "ship_to_city",
     "shipment_date",
-    "payment_terms", "payment_terms_code", "inco_terms", "freight_terms",
-    "origin", "ultimate_dest",
-    "total", "currency_code",
-    "packaging_total", "packaging_type"
+    "payment_terms",
+    "payment_terms_code",
+    "inco_terms",
+    "freight_terms",
+    "origin",
+    "ultimate_dest",
+    "total",
+    "currency_code",
+    "packaging_total",
+    "packaging_type"
   ],
   "invoice_list": {
     "description": "Array of invoices",
-    "fields": ["invoice_number", "invoice_date"],
+    "fields": [
+      "invoice_number",
+      "invoice_date"
+    ],
     "items": [
-      "number", "package_number", "packing_list_number", "prod_number", "description", "quantity", "uom", "unit_price", "amount", "currency", 
-      "origin", "origin_code", "hs_code", "vendor_name", "vendor_number", "packaging_type_item"
+      "number",
+      "prod_number",
+      "description",
+      "quantity",
+      "uom",
+      "unit_price",
+      "amount",
+      "currency",
+      "origin",
+      "origin_code",
+      "hs_code",
+      "vendor_name",
+      "vendor_number",
+      "packaging_type_item"
     ]
   },
   "pl_list": {
     "description": "Array of packing list entries",
-    "fields": ["packing_list_number", "packing_list_date", "invoice_number"],
+    "fields": [
+      "packing_list_number",
+      "packing_list_date",
+      "invoice_number"
+    ],
     "items": [
-      "number", "package_number", "prod_number", "description", "quantity", "quantity_unit", 
-      "net_weight", "gross_weight", "measurement", "packaging_qty", "packaging_unit", 
-      "packaging_type", "brand", "origin"
+      "number",
+      "package_number",
+      "prod_number",
+      "description",
+      "quantity",
+      "quantity_unit",
+      "net_weight",
+      "gross_weight",
+      "measurement",
+      "packaging_qty",
+      "packaging_unit",
+      "packaging_type",
+      "brand",
+      "origin"
     ]
   }
 }

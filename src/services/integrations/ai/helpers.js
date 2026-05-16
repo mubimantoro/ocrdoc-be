@@ -231,54 +231,94 @@ export const applyForwardFill = (data) => {
 export const parseItemsCsv = (data, docCode) => {
   if (!data) return;
 
+  const NUMERIC_FIELDS = new Set([
+    'quantity', 'net_weight', 'gross_weight',
+    'packaging_qty', 'unit_price', 'amount'
+  ]);
+
+  // ── Normalisasi UoM & Packaging Unit ─────────────────────────────────────
+  const normalizeUom = (val) => {
+    const v = val.toUpperCase();
+    if (['PC', 'PCE', 'PIECE', 'PCS.'].includes(v)) return 'PCS';
+    if (['KG', 'KILO', 'KGS.'].includes(v)) return 'KGS';
+    return v;
+  };
+
+
+  const normalizePackagingUnit = (val) => {
+    const v = val.toUpperCase();
+    if (['BOX', 'BX.'].includes(v)) return 'BX';
+    if (['CARTON', 'CTN', 'CT.'].includes(v)) return 'CT';
+    if (['PALLET', 'PLT'].includes(v)) return 'PL';
+    return v;
+  };
+
   const processList = (listArray, keys) => {
     if (!Array.isArray(listArray)) return;
     listArray.forEach((entry) => {
-      if (entry['items_csv']) {
-        let lines = [];
-        if (Array.isArray(entry['items_csv'])) {
-          lines = entry['items_csv'].filter((l) => l && l.trim() !== '');
-        } else if (typeof entry['items_csv'] === 'string') {
-          lines = entry['items_csv'].split('\n').filter((l) => l.trim() !== '');
-        }
+      if (!entry['items_csv']) return;
 
-        entry.items = lines.map((line) => {
-          const parts = line.split('|');
-          const obj = {};
-          keys.forEach((k, i) => {
-            let val = parts[i] ? parts[i].trim() : null;
-            if (val === '') val = null;
-            else if (['quantity', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'unit_price', 'amount'].includes(k) && val) {
+      let lines = [];
+      if (Array.isArray(entry['items_csv'])) {
+        lines = entry['items_csv'].filter((l) => l && l.trim() !== '');
+      } else if (typeof entry['items_csv'] === 'string') {
+        lines = entry['items_csv'].split('\n').filter((l) => l.trim() !== '');
+      }
+
+      entry.items = lines.map((line) => {
+        const parts = line.split('|');
+        const obj = {};
+
+        keys.forEach((k, i) => {
+          let val = parts[i] ? parts[i].trim() : null;
+          if (val === '') val = null;
+
+          if (val !== null) {
+            if (NUMERIC_FIELDS.has(k)) {
+              // Konversi ke Number: bersihkan pemisah ribuan dan simbol satuan
               const cleanedStr = val.toString().replace(/[^\d.-]/g, '');
               val = cleanedStr !== '' ? Number(cleanedStr) : null;
-            }
-            // Sanitizer Layer 2: Rigorous Normalization
-            else if (['uom', 'quantity_unit'].includes(k) && val) {
-              val = val.toUpperCase();
-              if (['PC', 'PCE', 'PIECE', 'PCS.'].includes(val)) val = 'PCS';
-              if (['KG', 'KILO', 'KGS.'].includes(val)) val = 'KGS';
-            } else if (['packaging_unit', 'packaging_type_item'].includes(k) && val) {
-              val = val.toUpperCase();
-              if (['BOX', 'BX.'].includes(val)) val = 'BX';
-              if (['CARTON', 'CTN', 'CT.'].includes(val)) val = 'CT';
-              if (['PALLET', 'PLT'].includes(val)) val = 'PL';
-            } else if (k === 'description' && val) {
+            } else if (k === 'uom' || k === 'quantity_unit') {
+              // [FIX-1 Rule 7] Normalisasi satuan unit
+              val = normalizeUom(val);
+            } else if (k === 'packaging_unit' || k === 'packaging_type_item') {
+              // [FIX-1 Rule 7] Normalisasi satuan kemasan
+              val = normalizePackagingUnit(val);
+            } else if (k === 'description') {
+              // Bersihkan spasi berlebih di description
               val = val.replace(/\s*\(\s*/g, ' (').replace(/\s*\)/g, ')').trim();
             }
-            obj[k] = val;
-          });
-          return obj;
+            // 'measurement' dibiarkan sebagai string — tidak ada transformasi
+          }
+
+          obj[k] = val;
         });
-        delete entry['items_csv'];
-      }
+
+        return obj;
+      });
+
+      delete entry['items_csv'];
     });
   };
 
   if (docCode === '001') {
-    processList(data['invoice_list'], ['number', 'package_number', 'packing_list_number', 'prod_number', 'description', 'quantity', 'uom', 'unit_price', 'amount', 'currency', 'origin', 'origin_code', 'hs_code', 'vendor_name', 'vendor_number', 'packaging_type_item']);
-    processList(data['pl_list'], ['number', 'package_number', 'prod_number', 'description', 'quantity', 'quantity_unit', 'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'packaging_unit', 'packaging_type', 'brand', 'origin']);
-  } else if (docCode === '217') {
+    processList(data['invoice_list'], [
+      'number', 'prod_number', 'description', 'quantity', 'uom',
+      'unit_price', 'amount', 'currency',
+      'origin', 'origin_code', 'hs_code', 'vendor_name', 'vendor_number', 'packaging_type_item'
+    ]);
 
-    processList(data['pl_list'], ['number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand', 'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement', 'packaging_qty', 'packaging_unit']);
+    // PL keys tidak berubah
+    processList(data['pl_list'], [
+      'number', 'package_number', 'prod_number', 'description', 'quantity', 'quantity_unit',
+      'net_weight', 'gross_weight', 'measurement', 'packaging_qty', 'packaging_unit',
+      'packaging_type', 'brand', 'origin'
+    ]);
+  } else if (docCode === '217') {
+    processList(data['pl_list'], [
+      'number', 'description', 'quantity', 'quantity_unit', 'origin', 'brand',
+      'net_weight', 'gross_weight', 'amount', 'unit_price', 'measurement',
+      'packaging_qty', 'packaging_unit'
+    ]);
   }
 };

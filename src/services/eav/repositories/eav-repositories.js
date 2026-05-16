@@ -1,4 +1,6 @@
+
 import pool from '../../../config/database.js';
+import logger from '../../../config/logger.js';
 import InvariantError from '../../../exceptions/invariant-error.js';
 
 class EavRepositories {
@@ -12,12 +14,8 @@ class EavRepositories {
       ON CONFLICT (extraction_result_id, key) DO UPDATE SET value = EXCLUDED.value
       RETURNING *;
     `;
-    const result = await pool.query(query, [extractionResultId, key, String(value)]);
-
-    if (!result.rows[0]) {
-      throw new InvariantError(`Gagal menyimpan Field dengan key: ${key}`);
-    }
-
+    const result = await pool.query(query, [extractionResultId, key, String(value ?? '')]);
+    if (!result.rows[0]) throw new InvariantError(`Gagal menyimpan Field: ${key}`);
     return result.rows[0];
   }
 
@@ -25,19 +23,12 @@ class EavRepositories {
    * Menyimpan indeks baris baru ke tabel 'items'
    */
   async createItem(extractionResultId, rowIndex) {
-    const query = `
-      INSERT INTO items (extraction_result_id, row_index) 
-      VALUES ($1, $2) 
-      RETURNING *;
-    `;
+    const query = 'INSERT INTO items (extraction_result_id, row_index) VALUES ($1, $2) RETURNING *;';
     const result = await pool.query(query, [extractionResultId, rowIndex]);
-
-    if (!result.rows[0]) {
-      throw new InvariantError(`Gagal menyimpan Item pada baris ke-${rowIndex}`);
-    }
-
+    if (!result.rows[0]) throw new InvariantError(`Gagal menyimpan Item baris: ${rowIndex}`);
     return result.rows[0];
   }
+
 
   /**
    * Menyimpan Key-Value ke tabel 'item_fields' untuk item tertentu
@@ -59,8 +50,7 @@ class EavRepositories {
   }
 
   /**
-   * BULK INSERT: Menyimpan puluhan/ratusan Fields hanya dengan 1 Koneksi Database
-   * @param {Array<{extractionResultId: string, key: string, value: string}>} dataArray
+   * BULK INSERT: Fields (Header Data)
    */
   async bulkCreateFields(dataArray) {
     if (!dataArray || dataArray.length === 0) return [];
@@ -71,7 +61,7 @@ class EavRepositories {
 
     for (const row of dataArray) {
       placeholders.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
-      values.push(row.extractionResultId, row.key, String(row.value));
+      values.push(row.extractionResultId, row.key, String(row.value ?? ''));
     }
 
     const query = `
@@ -86,8 +76,7 @@ class EavRepositories {
   }
 
   /**
-   * BULK INSERT: Menyimpan Parent Items
-   * @param {Array<{extractionResultId: string, rowIndex: number}>} dataArray
+   * BULK INSERT: Parent Items
    */
   async bulkCreateItems(dataArray) {
     if (!dataArray || dataArray.length === 0) return [];
@@ -101,42 +90,52 @@ class EavRepositories {
       values.push(row.extractionResultId, row.rowIndex);
     }
 
-    const query = `
-      INSERT INTO items (extraction_result_id, row_index) 
-      VALUES ${placeholders.join(', ')} 
-      RETURNING *;
-    `;
-
+    const query = `INSERT INTO items (extraction_result_id, row_index) VALUES ${placeholders.join(', ')} RETURNING *;`;
     const result = await pool.query(query, values);
     return result.rows;
   }
 
   /**
-   * BULK INSERT: Menyimpan Item Fields (Kolom Tabel)
-   * @param {Array<{itemId: string, key: string, value: string}>} dataArray
+   * BULK INSERT: Item Fields (CRITICAL FIX - CHUNKED)
+   * Membagi data menjadi batch maksimal 400 baris untuk menghindari limitasi parameter PostgreSQL (65k).
    */
   async bulkCreateItemFields(dataArray) {
     if (!dataArray || dataArray.length === 0) return [];
 
-    const values = [];
-    const placeholders = [];
-    let paramIndex = 1;
+    const CHUNK_SIZE = 400; // 400 baris * 3 kolom = 1200 parameter (Sangat aman)
+    const allResults = [];
 
-    for (const row of dataArray) {
-      placeholders.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
-      values.push(row.itemId, row.key, String(row.value));
+    for (let i = 0; i < dataArray.length; i += CHUNK_SIZE) {
+      const chunk = dataArray.slice(i, i + CHUNK_SIZE);
+      const values = [];
+      const placeholders = [];
+      let paramIndex = 1;
+
+      for (const row of chunk) {
+        placeholders.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++})`);
+        values.push(row.itemId, row.key, String(row.value ?? ''));
+      }
+
+      const query = `
+        INSERT INTO item_fields (item_id, key, value) 
+        VALUES ${placeholders.join(', ')} 
+        ON CONFLICT (item_id, key) DO UPDATE SET value = EXCLUDED.value
+        RETURNING *;
+      `;
+
+      try {
+        const result = await pool.query(query, values);
+        allResults.push(...result.rows);
+      } catch (error) {
+        logger.error({ event: 'eav_bulk_item_fields_failed', offset: i, error: error.message });
+        throw error;
+      }
     }
 
-    const query = `
-      INSERT INTO item_fields (item_id, key, value) 
-      VALUES ${placeholders.join(', ')} 
-      ON CONFLICT (item_id, key) DO UPDATE SET value = EXCLUDED.value
-      RETURNING *;
-    `;
-
-    const result = await pool.query(query, values);
-    return result.rows;
+    return allResults;
   }
+
+
 }
 
 export default new EavRepositories();

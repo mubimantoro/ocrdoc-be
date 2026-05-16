@@ -27,7 +27,7 @@ const rulesRegistry = {
       root.invoice_list.forEach((inv) => {
         if (Array.isArray(inv.items)) {
           inv.items.forEach((item) => {
-            // A. Standarisasi packaging_type_item
+          // A. Standarisasi packaging_type_item
             if (item.packaging_type_item) {
               item.packaging_type_item = standardizePackagingUnit(item.packaging_type_item);
             }
@@ -50,16 +50,25 @@ const rulesRegistry = {
       });
     }
 
-    // 3. Relational Data Join & Standarisasi UoM (PL List)
+    // 3. Standarisasi UoM & Gross Weight Guard (PL List)
     if (Array.isArray(root.pl_list)) {
       root.pl_list.forEach((pl) => {
         if (Array.isArray(pl.items)) {
           pl.items.forEach((plItem) => {
+          // A. Standarisasi packaging_unit & quantity_unit
             if (plItem.packaging_unit) {
               plItem.packaging_unit = standardizePackagingUnit(plItem.packaging_unit);
             }
             if (plItem.quantity_unit) {
               plItem.quantity_unit = standardizePackagingUnit(plItem.quantity_unit);
+            }
+
+            // B. [NEW] Gross Weight Guard: null → 0
+            // Schema baru Client mewajibkan gross_weight sebagai number (tidak boleh null).
+            // Nilai 0 valid — artinya item berbagi kemasan dengan item lain
+            // sehingga berat tidak dapat dipisahkan per item.
+            if (plItem.gross_weight === null || plItem.gross_weight === undefined) {
+              plItem.gross_weight = 0;
             }
           });
         }
@@ -85,7 +94,8 @@ const rulesRegistry = {
               const plNum = normalizeItemNum(plItem.number);
               return (
                 (invNum && plNum && invNum === plNum) ||
-                (invItem.description && plItem.description && invItem.description.trim() === plItem.description.trim())
+              (invItem.description && plItem.description &&
+                invItem.description.trim() === plItem.description.trim())
               );
             });
             if (found) match = found;
