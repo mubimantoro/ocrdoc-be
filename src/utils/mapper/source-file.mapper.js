@@ -57,6 +57,7 @@ export const formatSourceFileResponse = (record) => {
     uploaded_by: {
       id: record.uploaded_by,
       name: record.uploaded_by_name
-    }
+    },
+    boundary_results: record.boundary_results || []
   };
 };

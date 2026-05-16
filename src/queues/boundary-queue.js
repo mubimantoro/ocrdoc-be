@@ -143,7 +143,8 @@ export const boundaryWorker = new Worker('boundary-jobs', async (job) => {
       ocr: boundaryUsage.ocr,
       price: isNaN(cheapPrice) ? 0 : cheapPrice,
       startedAt: startTime,
-      modelUsed
+      modelUsed,
+      boundaryResults: documents // Simpan hasil segmentasi ke database
     });
 
     log.info({
