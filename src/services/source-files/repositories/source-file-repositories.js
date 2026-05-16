@@ -142,17 +142,17 @@ class SourceFileRepositories {
   }
 
   /**
-   * Menyimpan metrik Boundary Detection (Model Cheap)
+   * Menyimpan metrik Boundary Detection (Model Cheap) dan hasil segmentasi
    */
   async updateInitialMetrics(id, metrics) {
-    const { input, output, ocr, price, startedAt, modelUsed } = metrics;
+    const { input, output, ocr, price, startedAt, modelUsed, boundaryResults } = metrics;
     const query = `
       UPDATE source_files 
       SET cheap_token_input = $1, cheap_token_output = $2, cheap_token_ocr = $3, 
-          cheap_price = $4, started_at = $5, ai_model = $6, updated_at = CURRENT_TIMESTAMP 
-      WHERE id = $7 RETURNING *;
+          cheap_price = $4, started_at = $5, ai_model = $6, boundary_results = $7, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $8 RETURNING *;
     `;
-    const result = await pool.query(query, [input, output, ocr, price, startedAt, modelUsed, id]);
+    const result = await pool.query(query, [input, output, ocr, price, startedAt, modelUsed, JSON.stringify(boundaryResults), id]);
     return result.rows[0];
   }
 
