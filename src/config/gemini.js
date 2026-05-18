@@ -17,3 +17,7 @@ export const safetySettings = [
   { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
+
+// TOGGLE: Bypass Gemini AI for CIPL (001) documents and route them directly to webhook
+// Set to false to revert back to normal Gemini AI behavior
+export const BYPASS_CIPL_TO_WEBHOOK = true;

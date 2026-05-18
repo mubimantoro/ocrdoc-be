@@ -4,13 +4,14 @@ import { fileURLToPath } from 'url';
 import { getExtractionPrompt } from '../../../prompts/extraction/index.js';
 import { enforceSchemaStrictness } from '../../../utils/schema-enforcer.js';
 import { applyBusinessRules } from '../../../utils/business-rules.js';
-import { MODELS } from '../../../config/gemini.js';
+import { MODELS, BYPASS_CIPL_TO_WEBHOOK } from '../../../config/gemini.js';
 import { callGeminiWithRetry, extractOcrTokens, applyForwardFill, debugLog, parseItemsCsv } from './helpers.js';
 import { processExcelExtraction } from './handlers/excel.js';
 import { PDFDocument } from 'pdf-lib';
 import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtraction } from './handlers/pdf.js';
 import { processCiplPdfExtraction } from './handlers/pdf-cipl.js';
 import logger from '../../../config/logger.js';
+import axios from 'axios';
 
 /**
  * POST-PROCESSING: Buang item ghost di mana semua field bernilai null/undefined/string kosong.
@@ -80,6 +81,77 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
 
   const prompt = getExtractionPrompt(docCode, jsonSchema, isExcelToPdf);
   let finalParsedData = null;
+
+  // BYPASS TOGGLE: CIPL Webhook Testing
+  // Konfigurasi pusat ada di src/config/gemini.js (BYPASS_CIPL_TO_WEBHOOK)
+  if (BYPASS_CIPL_TO_WEBHOOK && docCode === '001') {
+    log.info({ event: 'cipl_webhook_extraction_start', docCode, mimeType }, 'Bypass Gemini: Menghubungi Webhook Testing CIPL...');
+
+    let fileExt = 'pdf';
+    if (mimeType.includes('excel') || mimeType.includes('spreadsheetml')) {
+      fileExt = 'xlsx';
+    } else if (mimeType.includes('png')) {
+      fileExt = 'png';
+    } else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) {
+      fileExt = 'jpg';
+    }
+    const filename = `document_${Date.now()}.${fileExt}`;
+
+    const formData = new FormData();
+    const fileBlob = new Blob([fileBuffer], { type: mimeType });
+    formData.append('data0', fileBlob, filename);
+
+    let webhookData = null;
+    try {
+      const response = await axios.post('https://ain8n.ai-lab.id/webhook/cipl-testing', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        },
+        timeout: 300000 // 5 Menit
+      });
+
+      webhookData = response.data;
+
+      // Force confidence_score ke 1.0 jika tidak ada dari webhook
+      if (webhookData && typeof webhookData === 'object') {
+        if (webhookData['confidence_score'] === undefined || webhookData['confidence_score'] === null) {
+          webhookData['confidence_score'] = 1.0;
+        }
+      }
+
+      log.info({ event: 'cipl_webhook_extraction_success', docCode }, 'Respon Webhook CIPL berhasil diterima.');
+    } catch (err) {
+      log.error({ event: 'cipl_webhook_extraction_failed', error: err.message }, 'Gagal memproses CIPL via Webhook');
+      throw new Error(`Webhook CIPL Gagal: ${err.message}`);
+    }
+
+    // POST-PROCESSING: Reasoning Cleanup (Safety)
+    if (webhookData?._reasoning) {
+      delete webhookData._reasoning;
+    }
+
+    // ZERO-REGRESSION: Kembalikan fungsi parseItemsCsv
+    parseItemsCsv(webhookData, docCode);
+
+    // POST-PROCESSING: Universal Forward-Fill
+    applyForwardFill(webhookData);
+
+    // POST-PROCESSING: Buang item ghost (semua field null)
+    purgeNullItems(webhookData, log);
+
+    // POST-PROCESSING: Business Rules
+    await applyBusinessRules(docCode, webhookData);
+
+    // POST-PROCESSING: Schema Contract Enforcer
+    const strictParsedData = enforceSchemaStrictness(webhookData, jsonSchema);
+    await debugLog(docCode, 'final_strict_schema_output', strictParsedData);
+
+    return {
+      data: strictParsedData,
+      usage: tokenUsage,
+      modelUsed: 'webhook-cipl'
+    };
+  }
 
   const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
   const isPdf = mimeType === 'application/pdf';

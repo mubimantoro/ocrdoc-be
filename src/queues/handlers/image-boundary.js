@@ -1,5 +1,6 @@
 /* eslint-disable camelcase */
 import { detectBoundaries } from '../../services/integrations/ai/boundary.js';
+import { BYPASS_CIPL_TO_WEBHOOK } from '../../config/gemini.js';
 
 /**
  * Memproses boundary detection untuk file gambar (single-page).
@@ -11,6 +12,23 @@ import { detectBoundaries } from '../../services/integrations/ai/boundary.js';
  * @returns {Promise<{documents: Array, usage: object, modelUsed: string}>}
  */
 export const processImageBoundary = async (fileBuffer, mimeType, manualDocType) => {
+  // BYPASS TOGGLE: CIPL Webhook Testing
+  // Konfigurasi pusat ada di src/config/gemini.js (BYPASS_CIPL_TO_WEBHOOK)
+  if (BYPASS_CIPL_TO_WEBHOOK && manualDocType === '001') {
+    return {
+      documents: [{
+        doc_code: '001',
+        start_page: 1,
+        end_page: 1,
+        document_number: null,
+        vendor: null,
+        confidence: 1.0
+      }],
+      usage: { inputTotal: 0, inputText: 0, ocr: 0, output: 0, total: 0 },
+      modelUsed: 'system-bypass'
+    };
+  }
+
   const boundaryResult = await detectBoundaries(fileBuffer, mimeType, 1, 1, manualDocType);
   const detectedPages = boundaryResult.pages || [];
 

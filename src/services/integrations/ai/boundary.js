@@ -3,7 +3,7 @@
 import fs from 'fs/promises';
 import { PDFDocument } from 'pdf-lib';
 import { getBoundaryPromptForDocType } from '../../../prompts/boundary/index.js';
-import { ai, MODELS } from '../../../config/gemini.js';
+import { ai, MODELS, BYPASS_CIPL_TO_WEBHOOK } from '../../../config/gemini.js';
 import { cleanAIJson } from '../../../utils/ai-sanitizer.js';
 import { buildDocumentsFromPages } from '../../../utils/boundary-resolver.js';
 import { extractOcrTokens } from './helpers.js';
@@ -97,6 +97,26 @@ export const detectBoundariesChunked = async (absoluteFilePath, mimeType, maxPag
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
 
   const totalPages = pdfDoc.getPageCount();
+
+  // BYPASS TOGGLE: CIPL Webhook Testing
+  // Konfigurasi pusat ada di src/config/gemini.js (BYPASS_CIPL_TO_WEBHOOK)
+  if (BYPASS_CIPL_TO_WEBHOOK && docType === '001') {
+    log.info({ event: 'boundary_cipl_bypass', docType }, 'CIPL Mode: Bypassing Gemini boundary detection (Enforced Single Document)');
+    return {
+      documents: [{
+        doc_code: '001',
+        start_page: 1,
+        end_page: totalPages,
+        document_number: null,
+        vendor: null,
+        confidence: 1.0
+      }],
+      usage: { inputTotal: 0, inputText: 0, ocr: 0, output: 0, total: 0 },
+      modelUsed: 'system-bypass',
+      pageCount: totalPages
+    };
+  }
+
   const allPagesRaw = [];
   const tokenUsage = { inputTotal: 0, inputText: 0, ocr: 0, output: 0, total: 0 };
 
