@@ -13,6 +13,10 @@ import { processCiplPdfExtraction } from './handlers/pdf-cipl.js';
 import logger from '../../../config/logger.js';
 import axios from 'axios';
 
+// Semaphore variables for CIPL Webhook Concurrency Limit
+let activeCIPLWebhookCount = 0;
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * POST-PROCESSING: Buang item ghost di mana semua field bernilai null/undefined/string kosong.
  *
@@ -85,7 +89,14 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   // BYPASS TOGGLE: CIPL Webhook Testing
   // Konfigurasi pusat ada di src/config/gemini.js (BYPASS_CIPL_TO_WEBHOOK)
   if (BYPASS_CIPL_TO_WEBHOOK && docCode === '001') {
-    log.info({ event: 'cipl_webhook_extraction_start', docCode, mimeType }, 'Bypass Gemini: Menghubungi Webhook Testing CIPL...');
+    // Concurrency control: Limit CIPL webhook requests to exactly 11 running concurrently
+    while (activeCIPLWebhookCount >= 11) {
+      log.warn({ event: 'cipl_webhook_concurrency_waiting', activeCount: activeCIPLWebhookCount }, 'CIPL webhook concurrency limit reached (11), waiting...');
+      await delay(1000);
+    }
+
+    activeCIPLWebhookCount++;
+    log.info({ event: 'cipl_webhook_extraction_start', docCode, mimeType, activeCount: activeCIPLWebhookCount }, 'Bypass Gemini: Menghubungi Webhook Testing CIPL...');
 
     let fileExt = 'pdf';
     if (mimeType.includes('excel') || mimeType.includes('spreadsheetml')) {
@@ -119,10 +130,12 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
         }
       }
 
-      log.info({ event: 'cipl_webhook_extraction_success', docCode }, 'Respon Webhook CIPL berhasil diterima.');
+      log.info({ event: 'cipl_webhook_extraction_success', docCode, activeCount: activeCIPLWebhookCount }, 'Respon Webhook CIPL berhasil diterima.');
     } catch (err) {
-      log.error({ event: 'cipl_webhook_extraction_failed', error: err.message }, 'Gagal memproses CIPL via Webhook');
+      log.error({ event: 'cipl_webhook_extraction_failed', error: err.message, activeCount: activeCIPLWebhookCount }, 'Gagal memproses CIPL via Webhook');
       throw new Error(`Webhook CIPL Gagal: ${err.message}`);
+    } finally {
+      activeCIPLWebhookCount = Math.max(0, activeCIPLWebhookCount - 1);
     }
 
     // POST-PROCESSING: Reasoning Cleanup (Safety)
@@ -151,6 +164,11 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       usage: tokenUsage,
       modelUsed: 'webhook-cipl'
     };
+  }
+
+  // BULLETPROOF SAFETY SHIELD: CIPL must NEVER pass beyond this point if bypass is active
+  if (docCode === '001' && BYPASS_CIPL_TO_WEBHOOK) {
+    throw new Error('CRITICAL_SECURITY_VIOLATION: CIPL document reached Gemini pipeline despite BYPASS_CIPL_TO_WEBHOOK being active!');
   }
 
   const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
