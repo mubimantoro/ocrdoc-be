@@ -18,7 +18,6 @@ import EavRepositories from '../services/eav/repositories/eav-repositories.js';
 import ExtractionResultRepositories from '../services/documents/repositories/extraction-result-repositories.js';
 import logger from '../config/logger.js';
 import pool from '../config/database.js';
-import { BYPASS_CIPL_TO_WEBHOOK } from '../config/gemini.js';
 // import { webhookQueue } from './webhook.queue.js';
 
 const connection = {
@@ -80,19 +79,6 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
       else actualMimeType = 'application/pdf';
     }
 
-    let fileBufferToExtract = splitPdfBuffer;
-    let mimeTypeToExtract = actualMimeType;
-
-    if (BYPASS_CIPL_TO_WEBHOOK && docCode === '001') {
-      if (isExcelToPdf) {
-        log.info({ event: 'cipl_excel_webhook_bypass_preparation', sourceFileId }, 'CIPL Bypass & Excel terdeteksi — memuat file Excel asli untuk dikirim ke webhook');
-        const sourceFile = await SourceFileRepositories.findById(sourceFileId);
-        const originalPath = path.resolve(sourceFile.file_path);
-        fileBufferToExtract = await fs.readFile(originalPath);
-        mimeTypeToExtract = sourceFile.mime_type;
-      }
-    }
-
     const keepAliveInterval = setInterval(() => {
       pool.query('SELECT 1').catch(() => {});
       log.debug({ event: 'db_heartbeat' }, 'Mencegah DB idle timeout...');
@@ -100,7 +86,7 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
 
     let extracted;
     try {
-      extracted = await extractSmartData(fileBufferToExtract, mimeTypeToExtract, docCode, sheetName, isExcelToPdf, log);
+      extracted = await extractSmartData(splitPdfBuffer, actualMimeType, docCode, sheetName, isExcelToPdf, log);
     } finally {
       // WAJIB matikan interval saat AI selesai agar tidak memory leak
       clearInterval(keepAliveInterval);

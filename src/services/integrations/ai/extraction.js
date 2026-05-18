@@ -15,6 +15,7 @@ import axios from 'axios';
 
 // Semaphore variables for CIPL Webhook Concurrency Limit
 let activeCIPLWebhookCount = 0;
+let lastCIPLWebhookTime = 0;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -95,6 +96,15 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
       await delay(1000);
     }
 
+    // PENCEGAHAN RACE CONDITION n8n (Staggered 500ms)
+    // Menghindari upload bersamaan di milidetik yang sama yang menyebabkan error 'file not found' di n8n
+    const now = Date.now();
+    const timeSinceLast = now - lastCIPLWebhookTime;
+    if (timeSinceLast < 500) {
+      await delay(500 - timeSinceLast);
+    }
+    lastCIPLWebhookTime = Date.now();
+
     activeCIPLWebhookCount++;
     log.info({ event: 'cipl_webhook_extraction_start', docCode, mimeType, activeCount: activeCIPLWebhookCount }, 'Bypass Gemini: Menghubungi Webhook Testing CIPL...');
 
@@ -106,7 +116,10 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     } else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) {
       fileExt = 'jpg';
     }
-    const filename = `document_${Date.now()}.${fileExt}`;
+
+    // UNIQUE FILENAME: Menggabungkan timestamp dengan random string untuk memisahkan file dari request konkuren
+    const uniqueId = Math.random().toString(36).substring(2, 9);
+    const filename = `document_${Date.now()}_${uniqueId}.${fileExt}`;
 
     const formData = new FormData();
     const fileBlob = new Blob([fileBuffer], { type: mimeType });
