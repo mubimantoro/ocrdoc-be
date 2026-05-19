@@ -12,6 +12,7 @@ import { processPdfExtraction, processLightPdfExtraction, processParallelPdfExtr
 import { processCiplPdfExtraction } from './handlers/pdf-cipl.js';
 import logger from '../../../config/logger.js';
 import axios from 'axios';
+import { convertExcelToPdf } from '../gotenberg.js';
 
 // Semaphore variables for CIPL Webhook Concurrency Limit
 let activeCIPLWebhookCount = 0;
@@ -108,9 +109,16 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     activeCIPLWebhookCount++;
     log.info({ event: 'cipl_webhook_extraction_start', docCode, mimeType, activeCount: activeCIPLWebhookCount }, 'Bypass Gemini: Menghubungi Webhook Testing CIPL...');
 
+    const isExcelUpload = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+    let uploadBuffer = fileBuffer;
+    let uploadMimeType = mimeType;
     let fileExt = 'pdf';
-    if (mimeType.includes('excel') || mimeType.includes('spreadsheetml')) {
-      fileExt = 'xlsx';
+
+    if (isExcelUpload) {
+      log.info({ event: 'cipl_webhook_excel_conversion_start', docCode }, 'File Excel CIPL terdeteksi, konversi ke PDF via Gotenberg sebelum upload ke webhook');
+      uploadBuffer = await convertExcelToPdf(fileBuffer, `document_${Date.now()}.xlsx`, log);
+      uploadMimeType = 'application/pdf';
+      log.info({ event: 'cipl_webhook_excel_conversion_success', docCode }, 'Konversi Excel CIPL ke PDF selesai, siap upload ke webhook');
     } else if (mimeType.includes('png')) {
       fileExt = 'png';
     } else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) {
@@ -122,7 +130,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     const filename = `document_${Date.now()}_${uniqueId}.${fileExt}`;
 
     const formData = new FormData();
-    const fileBlob = new Blob([fileBuffer], { type: mimeType });
+    const fileBlob = new Blob([uploadBuffer], { type: uploadMimeType });
     formData.append('data0', fileBlob, filename);
 
     let webhookData = null;
