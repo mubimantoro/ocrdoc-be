@@ -133,6 +133,10 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     const fileBlob = new Blob([uploadBuffer], { type: uploadMimeType });
     formData.append('data0', fileBlob, filename);
 
+    if (isExcelUpload) {
+      formData.append('is_excel', 'true');
+    }
+
     let webhookData = null;
     try {
       const response = await axios.post('https://ain8n.ai-lab.id/webhook/cipl-testing', formData, {
