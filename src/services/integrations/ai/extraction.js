@@ -109,7 +109,9 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     activeCIPLWebhookCount++;
     log.info({ event: 'cipl_webhook_extraction_start', docCode, mimeType, activeCount: activeCIPLWebhookCount }, 'Bypass Gemini: Menghubungi Webhook Testing CIPL...');
 
-    const Upload = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+    // `mimeType` bisa sudah menjadi PDF setelah konversi Excel di boundary worker,
+    // jadi tetap pertahankan info asal file lewat `isExcelToPdf`.
+    const isExcelUpload = isExcelToPdf || mimeType.includes('excel') || mimeType.includes('spreadsheetml');
     let uploadBuffer = fileBuffer;
     let uploadMimeType = mimeType;
     let fileExt = 'pdf';
