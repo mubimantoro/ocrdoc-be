@@ -109,7 +109,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     activeCIPLWebhookCount++;
     log.info({ event: 'cipl_webhook_extraction_start', docCode, mimeType, activeCount: activeCIPLWebhookCount }, 'Bypass Gemini: Menghubungi Webhook Testing CIPL...');
 
-    const isExcelUpload = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
+    const Upload = mimeType.includes('excel') || mimeType.includes('spreadsheetml');
     let uploadBuffer = fileBuffer;
     let uploadMimeType = mimeType;
     let fileExt = 'pdf';
@@ -133,9 +133,7 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
     const fileBlob = new Blob([uploadBuffer], { type: uploadMimeType });
     formData.append('data0', fileBlob, filename);
 
-    if (isExcelUpload) {
-      formData.append('is_excel', 'true');
-    }
+    formData.append('is_excel', isExcelUpload ? 'true' : 'false');
 
     let webhookData = null;
     try {
