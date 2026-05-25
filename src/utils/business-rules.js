@@ -74,40 +74,6 @@ const rulesRegistry = {
         }
       });
     }
-
-    // 4. Relational Data Join (Invoice -> PL)
-    if (Array.isArray(root.invoice_list) && Array.isArray(root.pl_list)) {
-      const normalizeItemNum = (numStr) => {
-        if (!numStr) return '';
-        const cleaned = String(numStr).replace(/^0+/, '');
-        return cleaned === '' ? '0' : cleaned;
-      };
-
-      root.pl_list.forEach((pl) => {
-        const plItems = pl.items || [];
-        plItems.forEach((plItem) => {
-          let match = null;
-          root.invoice_list.forEach((inv) => {
-            const invItems = inv.items || [];
-            const found = invItems.find((invItem) => {
-              const invNum = normalizeItemNum(invItem.number);
-              const plNum = normalizeItemNum(plItem.number);
-              return (
-                (invNum && plNum && invNum === plNum) ||
-              (invItem.description && plItem.description &&
-                invItem.description.trim() === plItem.description.trim())
-              );
-            });
-            if (found) match = found;
-          });
-
-          if (match) {
-            if (!plItem.unit_price) plItem.unit_price = match.unit_price;
-            if (!plItem.amount) plItem.amount = match.amount;
-          }
-        });
-      });
-    }
   },
 
   // ==========================================

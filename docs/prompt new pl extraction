@@ -1,0 +1,41 @@
+saya ingin kamu extract dokumen berikut.
+hanya extract yang secara explisit tertulis, lengkap dan sesuai dengan skema yang di berikan. jika ada indikator dimana valuenya secara reasoning kamu temukan, maka hanya isi jika indikatornya kuat semisal di atas 70% yakin.
+ada dokumen yang menggunakan format SAP jadi bisa saja format titik-koma nya berbeda. harus di perhatikan.
+catatan:
+1. packing list number diambil dari exact packing list number, bukan shipment number atau package number. WAJIB MENGELUARKAN PACKING LIST NUMBER JIKA ADA
+2. Data item bisa tersebar di satu tabel gabungan, tabel package saja,
+tabel item saja, atau keduanya terpisah. Jika ada dua tabel terpisah,
+join menggunakan package_number sebagai kunci — satu row output per item,
+field weight/dimensi/packaging diambil dari tabel package yang cocok.
+Setiap package di tabel package WAJIB muncul sebagai row output,
+meskipun tidak ada item yang mereferensikannya di tabel item.
+Jangan kosongkan field sebelum lookup ke seluruh konteks dokumen.
+3. Format angka bisa menggunakan konvensi lokal (koma sebagai desimal, titik sebagai pemisah ribuan, atau sebaliknya). Tentukan konvensi yang digunakan berdasarkan konteks dokumen, lalu konversi ke desimal standar.
+
+Output HARUS berupa JSON valid sesuai JSON Schema berikut (tanpa markdown fence):
+{
+  "item_headers": [
+    "number", "package_number", "prod_number", "description", "quantity",
+    "quantity_unit", "net_weight", "gross_weight", "measurement",
+    "packaging_qty", "packaging_unit", "packaging_type", "brand", "origin"
+  ],
+  "pl_list": [
+    {
+      "packing_list_number": "PL-20250205-01",
+      "packing_list_date": "2025-02-05",
+      "invoice_number": ["2221852744", "2221852745"],
+      "rows": [
+        [1, "RDA022250002488", "W816253480313", "ATV71 ENCODER PP 24V PCBA", 48, "PC", 12.5, 14.0, "117.5x73x76.5", 1, "BOX", "CARTON", "Schneider", "Indonesia"],
+        [2, "RDA022250002489", "W816253480313", "ATV71 ENCODER PP 24V PCBA", 48, "PC", 12.5, null, "117.5x73x76.5", 1, "BOX", "CARTON", "Schneider", "Indonesia"]
+      ]
+    },
+    {
+      "packing_list_number": null,
+      "packing_list_date": "2025-02-05",
+      "invoice_number": ["2221852746"],
+      "rows": [
+        [17, "RDA022250002490", "W817544713113", "ATV71 =S= PROFIBUS DP ASSY", 20, "PC", 8.0, 9.2, null, 2, "CARTON", "BOX", "Schneider", "Indonesia"]
+      ]
+    }
+  ]
+}

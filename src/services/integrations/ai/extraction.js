@@ -201,7 +201,10 @@ export const extractSmartData = async (fileBuffer, mimeType, docCode, sheetName 
   }
 
   // POST-PROCESSING: Universal Forward-Fill
-  applyForwardFill(finalParsedData);
+  if (docCode !== '001') {
+    applyForwardFill(finalParsedData);
+  }
+
 
   // POST-PROCESSING: Buang item ghost (semua field null)
   // Dipanggil setelah forwardFill agar item yang sebelumnya kosong

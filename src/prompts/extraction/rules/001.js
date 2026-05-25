@@ -1,131 +1,144 @@
-export const instructions = `
->>> DIREKTIF KHUSUS DOKUMEN: CIPL (COMBINED INVOICE PACKING LIST - 001) <<<
-ANDA ADALAH DOMAIN EXPERT LOGISTIK KARGO INTERNASIONAL DENGAN SPESIALISASI PEMBACAAN DOKUMEN
-COMBINED INVOICE & PACKING LIST (CIPL). ANDA MEMAHAMI STRUKTUR HIERARKI TABEL CIPL, ATURAN
-INCOTERMS, HS CODE, DAN KONVENSI PENOMORAN KEMASAN STANDAR INDUSTRI. BERIKUT ATURAN KETAT:
+// ── N8N COMPACT PROMPT BUILDERS (ARRAY OF ARRAYS) ─────────────────────────
+//
+// PATCH v14.2 — Perbaikan prompt:
+//   B4  — Invoice: tambah instruksi forward-fill currency/vendor per baris
+//   B5  — Invoice: contoh packaging_type_item lebih lengkap + contoh negatif
+//   B6  — PL: standardisasi format measurement (LxWxH dalam cm)
+//   B7  — Invoice: tambah catatan format SAP (titik-koma sebagai delimiter)
+//   B8  — PL: perkuat instruksi packing_list_number untuk window context (RC-1)
+// ─────────────────────────────────────────────────────────────────────────────
 
-1. STRUKTUR OUTPUT (WAJIB):
-Hasilkan JSON dengan struktur berikut. Gunakan 'items_csv' (String) untuk menggantikan array barang 'items' guna menghemat token.
+// ════════════════════════════════════════════════════════════════════════════
+// getInvoiceCompactPrompt — FIX B4, B5, B7 (tidak berubah dari v14.1)
+// ════════════════════════════════════════════════════════════════════════════
+export const getInvoiceCompactPrompt = () => {
+  return `Ekstrak data invoice dari dokumen berikut ke dalam format JSON compact.
+
+ATURAN EKSTRAKSI:
+1. Hanya ekstrak yang secara EKSPLISIT tertulis. Jika ragu dan keyakinan di bawah 70%, isi null.
+
+CATATAN FORMAT SAP (FIX B7):
+Beberapa dokumen menggunakan format SAP dengan delimiter titik-koma (;) antar kolom,
+bukan spasi atau tab. Identifikasi delimiter yang digunakan berdasarkan konteks dokumen,
+lalu parse dengan benar. Contoh baris SAP:
+  "001;W816253480313;ATV71 ENCODER;48;PC;21.76;1044.48;USD;Indonesia;ID"
+
+FORWARD-FILL (FIX B4):
+Jika kolom currency, vendor_name, origin, atau origin_code hanya tertulis
+di baris pertama invoice (header baris) dan tidak diulang di baris berikutnya,
+WAJIB isi field tersebut dengan nilai dari baris pertama untuk SEMUA baris dalam
+invoice yang sama. Jangan biarkan null hanya karena tidak tercetak ulang.
+
+CATATAN PENTING UNTUK FIELD "packaging_type_item" (FIX B5):
+- Field ini HANYA diisi dengan BARCODE PAKET dari kolom Packing List / Delivery.
+- Format VALID: angka numerik panjang 12-20 digit.
+  Contoh valid: "689943561067474782" (18 digit), "123456789012" (12 digit EAN)
+- Format TIDAK VALID (isi null):
+  • Nomor SAP internal format "S" + angka (contoh: "S94253", "S0012345")
+  • Kode produk alfanumerik (contoh: "W816253480313")
+  • Nomor PO / order (contoh: "4500123456")
+  • Teks deskriptif apapun
+  • Angka kurang dari 12 digit
+- Jika satu baris invoice tidak memiliki referensi barcode yang jelas → null.
+- Jika ada beberapa nomor di kolom yang sama, ambil hanya yang 12-20 digit numerik murni.
+
+Output HARUS berupa JSON valid sesuai skema berikut (tanpa markdown fence):
 {
-  "_reasoning": "Singkat saja (max 1 kalimat)",
-  "packing_list_date": "YYYY-MM-DD",
-  ...field_root_lainnya...,
-  "invoice_list": [
-    {
-      "invoice_number": "...",
-      "invoice_date": "YYYY-MM-DD",
-      "items_csv": "baris1_data\\nbaris2_data\\n..."
-    }
+  "item_headers": [
+    "number", "prod_number", "description", "quantity", "uom",
+    "unit_price", "amount", "currency", "origin", "origin_code",
+    "hs_code", "vendor_name", "vendor_number", "packaging_type_item"
   ],
-  "pl_list": [
+  "invoices": [
     {
-      "packing_list_number": "...",
-      "packing_list_date": "YYYY-MM-DD",
-      "invoice_number": ["..."],
-      "items_csv": "baris1_data\\nbaris2_data\\n..."
+      "invoice_number": "2221852744",
+      "invoice_date": "2025-02-05",
+      "rows": [
+        [1, "W816253480313", "ATV71 ENCODER PP 24V PCBA", 48, "PC", 21.76, 1044.48, "USD", "Indonesia", "ID", null, "PT Schneider Electric Manufacturing Batam", null, "689943561063867762"],
+        [2, "W816253480314", "ATV71 ENCODER PP 24V PCBA", 24, "PC", 21.76, 522.24, "USD", "Indonesia", "ID", null, "PT Schneider Electric Manufacturing Batam", null, null]
+      ]
     }
   ]
 }
 
-2. FORMAT items_csv (KRITIKAL):
-- FORMAT INVOICE ('invoice_list.items_csv'):
-  number|prod_number|description|quantity|uom|unit_price|amount|currency|origin|origin_code|hs_code|vendor_name|vendor_number|packaging_type_item
+ATURAN TOKEN:
+- WAJIB output item_headers hanya SEKALI di root level, tidak diulang per invoice.
+- Isi null sebagai nilai kosong di dalam array row (bukan string "null").
+- Jangan tambahkan key apapun di luar skema.`;
+};
 
-- FORMAT PACKING LIST ('pl_list.items_csv'):
-  number|package_number|prod_number|description|quantity|quantity_unit|net_weight|gross_weight|measurement|packaging_qty|packaging_unit|packaging_type|brand|origin
+// ════════════════════════════════════════════════════════════════════════════
+// getPlCompactPrompt — FIX B6 + FIX B8 (RC-1: packing_list_number awareness)
+// ════════════════════════════════════════════════════════════════════════════
+export const getPlCompactPrompt = () => {
+  return `Ekstrak data packing list dari dokumen berikut ke dalam format JSON compact.
 
-CATATAN URUTAN PL: Pastikan 'packaging_qty' (kolom ke-10) dan 'packaging_unit' (kolom ke-11)
-  selalu berada di posisi yang benar. Jangan tertukar posisinya.
+ATURAN EKSTRAKSI:
+1. Hanya ekstrak yang secara EKSPLISIT tertulis, lengkap dan sesuai skema.
+2. Jika ragu dan keyakinan di bawah 70%, isi null.
 
-* Aturan CSV Universal:
-  1. Tanpa header. Pisahkan antar barang HANYA dengan newline (\\n).
-  2. Pisahkan antar kolom HANYA dengan tanda pipa (|).
-  3. DATA KOSONG/NULL: Jika data tidak ada, biarkan kosong di antara tanda pipa (contoh: data1||data3). DILARANG menulis kata "null" atau "N/A".
-  4. ANTI-BREAKING: DILARANG KERAS menggunakan tanda pipa (|) atau newline (\\n) di dalam teks data (Ganti dengan spasi). Ekstrak description SEPENUHNYA, tetapi abaikan klausa pengiriman/legal (seperti "S.T.C").
+CATATAN FORMAT SAP:
+Beberapa dokumen menggunakan format SAP dengan delimiter titik-koma (;) antar kolom.
+Identifikasi delimiter yang digunakan berdasarkan konteks, lalu parse dengan benar.
 
-3. DETEKSI KEMASAN (PACKAGING_TYPE & PACKAGING_TYPE_ITEM):
-   - ROOT 'packaging_type': Cari deklarasi utama pengiriman di bagian header/summary logistik
-     (contoh: "Shipment of 9 Pallets"). Prioritaskan kata "Pallets" atau "Cartons" dibandingkan
-     "Packages". Ekstrak NAMA KEMASAN SAJA — tanpa angka kuantitas.
-     Angka kuantitas sudah ditangkap oleh field 'packaging_total' yang terpisah.
-   - 'package_number' (di pl_list): Ekstrak nomor Handling Unit / Case ID / Pallet ID (contoh: RDA022250002488).
-   - 'packaging_type_item' (di invoice_list): Ekstrak jenis kemasan spesifik baris tersebut (contoh: BX, SA).
-     Isi null jika item berbagi kemasan dengan item lain pada baris yang sama.
+ATURAN KRITIS — PACKING LIST NUMBER (FIX B8):
+packing_list_number adalah nomor unik per entri packing list (bukan shipment number,
+bukan package barcode, bukan invoice number).
+- Jika dokumen menampilkan nomor PL di HEADER HALAMAN dan tidak diulang di setiap baris:
+  WAJIB gunakan nomor PL dari header halaman tersebut untuk SEMUA baris item di halaman itu.
+- Jika ada konteks dari halaman sebelumnya (Anda menerima multi-halaman):
+  Cari packing_list_number di halaman mana pun yang tersedia, lalu gunakan untuk halaman target.
+- JANGAN kembalikan null untuk packing_list_number jika ada nomor PL di mana pun dalam dokumen.
+- Setiap entri pl_list WAJIB memiliki packing_list_number yang valid.
+- Jika satu halaman mengandung MULTIPLE PL (header PL berbeda untuk kelompok baris berbeda),
+  pisahkan menjadi entri pl_list yang berbeda per packing_list_number.
 
-4. LOGIKA CROSS-REFERENCING (KHUSUS pl_list.items_csv):
-   CIPL umumnya memiliki dua lapisan tabel: "Tabel Summary per Invoice/Material" dan
-   "Tabel Detail Handling Unit". Gunakan KEDUA lapisan ini secara hierarkis:
- 
-   A. BERAT KOTOR/BERSIH ('net_weight', 'gross_weight'):
-      - PRIORITAS 1 (Tabel Summary): Jika ada Tabel Summary yang mencantumkan total berat
-        per material/invoice (kolom seperti "Weight", "Net Weight", "Gross Weight"),
-        GUNAKAN nilai dari sana secara langsung. Ini adalah ground truth.
-      - PRIORITAS 2 (Kalkulasi Manual): Jika tidak ada Tabel Summary berat, identifikasi
-        semua Handling Unit / Package yang memuat item tersebut dari Tabel Detail,
-        lalu JUMLAHKAN (SUM) berat masing-masing Handling Unit tersebut.
-      - WAJIB: 'gross_weight' HARUS selalu diisi dengan angka. Gunakan 0 jika item
-        berbagi kemasan dengan item lain dan berat tidak dapat dipisahkan.
- 
-   B. JUMLAH KEMASAN ('packaging_qty') — SUMBER DATA WAJIB BERURUTAN:
-      - PRIORITAS 1 (Tabel Summary): Cari kolom bernama "Box", "Carton", "No. of Pkg",
-        "Pkg Qty", atau sejenisnya pada Tabel Summary per material/invoice.
-        GUNAKAN nilai kolom tersebut LANGSUNG sebagai 'packaging_qty'. INI ADALAH
-        SUMBER PALING AKURAT. DILARANG menghitung ulang jika nilai ini sudah tersedia.
-      - PRIORITAS 2 (Hitung dari Detail): Hanya jika Tabel Summary TIDAK memiliki
-        kolom jumlah kemasan, barulah hitung JUMLAH BARIS UNIK Handling Unit /
-        Package di Tabel Detail yang memuat item tersebut.
- 
-   C. UNIT KEMASAN ('packaging_unit') & TYPE ('packaging_type'):
-      Tugasmu adalah mengekstrak teks kemasan fisik apa adanya seperti yang tertulis
-      di dokumen.
-      - packaging_unit: Unit kuantitas kemasan (contoh: BOX, CARTON, BAG).
-      - packaging_type: Jenis kemasan lengkap (contoh: Cartons$TP765).
+CATATAN KHUSUS:
+1. packing_list_number: ambil dari EXACT nomor packing list, bukan shipment number
+   atau package number. WAJIB diisi jika ada.
+2. Data item bisa tersebar di satu tabel gabungan, tabel package saja,
+   tabel item saja, atau keduanya terpisah. Jika ada dua tabel terpisah,
+   join menggunakan package_number sebagai kunci — satu row output per item.
+   Field weight/dimensi/packaging diambil dari tabel package yang cocok.
+   Setiap package di tabel package WAJIB muncul sebagai row output,
+   meskipun tidak ada item yang mereferensikannya.
+3. Format angka: konvensi lokal (koma sebagai desimal, titik sebagai ribuan)
+   dikonversi ke desimal standar berdasarkan konteks dokumen.
 
-4A. FORMAT SAP/ERP — SATU DELIVERY NUMBER = SATU pl_list ENTRY (KRITIKAL):
-   Beberapa dokumen CIPL (Schneider Electric, dll.) menggunakan format SAP/ERP di mana
-   SETIAP BARIS ITEM memiliki DELIVERY NUMBER / NOMOR PACKING LIST TERSENDIRI.
+FORMAT MEASUREMENT (FIX B6):
+- Field "measurement" WAJIB dalam format: "PanjangxLebarxTinggi" (dalam cm, tanpa spasi)
+- Contoh VALID: "117.5x73x76.5", "60x40x30", "100x80x120"
+- Contoh TIDAK VALID: "0.62L", "117.5 x 73 x 76.5", "117,5x73x76,5"
+- Jika dokumen menggunakan format berbeda, konversi ke format LxWxH dalam cm.
+- Jika satuan bukan cm (misal: mm atau inch), konversi terlebih dahulu.
+- Jika measurement tidak tersedia atau tidak bisa dipastikan → null.
 
-   CARA IDENTIFIKASI format ini:
-   - Tabel PL memiliki kolom "Delivery No.", "Deliv.", atau "PL No." yang BERBEDA
-     nilainya di setiap baris (bukan satu nomor untuk semua baris dalam seksi)
-   - Nomor tersebut biasanya 10 digit (contoh: "2216157132", "2216159269")
-   - Setiap nomor biasanya hanya terkait dengan 1-3 item
+Output HARUS berupa JSON valid sesuai skema berikut (tanpa markdown fence):
+{
+  "item_headers": [
+    "number", "package_number", "prod_number", "description", "quantity",
+    "quantity_unit", "net_weight", "gross_weight", "measurement",
+    "packaging_qty", "packaging_unit", "packaging_type", "brand", "origin"
+  ],
+  "pl_list": [
+    {
+      "packing_list_number": "PL-20250205-01",
+      "packing_list_date": "2025-02-05",
+      "invoice_number": ["2221852744", "2221852745"],
+      "rows": [
+        [1, "689943561063867762", "W816253480313", "ATV71 ENCODER PP 24V PCBA", 48, "PC", 12.5, 14.0, "117.5x73x76.5", 1, "CARTON", "CARTON", "Schneider Electric", "Indonesia"],
+        [2, "689943561063867763", "W816253480313", "ATV71 ENCODER PP 24V PCBA", 48, "PC", 12.5, null, "117.5x73x76.5", 1, "CARTON", "CARTON", "Schneider Electric", "Indonesia"]
+      ]
+    }
+  ]
+}
 
-   ATURAN EKSTRAKSI (WAJIB jika format ini terdeteksi):
-   1. SATU ENTRY PER DELIVERY NUMBER: Setiap baris delivery = satu pl_list entry terpisah.
-      'packing_list_number' = delivery number dari kolom "Deliv." / "Delivery No." PADA BARIS ITU.
-   2. JANGAN gunakan nomor header tabel (seperti "128887") sebagai packing_list_number.
-      Header nomor pendek bukan delivery number individual.
-   3. 'package_number' di dalam items: Isi dengan barcode/handling unit number yang BERBEDA
-      dari packing_list_number (biasanya 18 digit: "689943561067537692").
-      JANGAN isi package_number dengan delivery number 10-digit yang sudah jadi packing_list_number.
-   4. Jika satu delivery number memiliki lebih dari satu item (jarang), buat SATU entry
-      dengan multiple items di bawah delivery number yang sama.
+ATURAN TOKEN:
+- WAJIB output item_headers hanya SEKALI di root level.
+- Isi null sebagai nilai kosong di dalam array row (bukan string "null").
+- Jangan tambahkan key apapun di luar skema.`;
+};
 
-5. CURRENCY MISMATCH GUARD (INVOICE LIST):
-   Perhatikan header kolom harga! Jika 'Unit Price' menggunakan mata uang yang BERBEDA
-   dengan 'Amount', dan kamu mengekstrak Amount dalam USD, maka kamu DILARANG
-   mengekstrak Unit Price tersebut. Biarkan kolom unit_price kosong (||).
-
-6. LOGIKA ASAL NEGARA (ORIGIN) & INCOTERMS:
-   - Origin: Ekstrak nama utuh (contoh: CHINA) dan ISO Alpha-2 (contoh: CN). 
-   - Incoterms ('inco_terms'): Ekstrak NILAI SEPENUHNYA persis seperti yang tertulis di dokumen.
-
-7. NORMALISASI & INTEGRITAS DATA (WAJIB):
-   Untuk menjaga konsistensi antar halaman/chunk (menghindari variasi seperti PC vs PCS), Anda WAJIB mengikuti standar normalisasi berikut:
-   - uom / quantity_unit: Gunakan SELALU 'PCS' (untuk pieces), 'KGS' (untuk kilograms), 'MTR' (untuk meters). Jangan gunakan 'PC', 'PCE', atau 'PCE'.
-   - packaging_unit: Gunakan SELALU 'BX' (untuk Box), 'CT' (untuk Carton), 'PL' (untuk Pallet), 'SET' (untuk Set).
-   - packaging_type: Ekstrak tipe fisik utuh (contoh: 'CARTON' bukan hanya 'CT').
-   - Identity Keys: 'prod_number' dan 'package_number' adalah kunci utama sistem. DILARANG KERAS mengabaikan nomor ini jika terlihat di dokumen. Pastikan penulisan nomor identitas ini konsisten di setiap baris yang merujuk pada barang yang sama.
-
-8. PETA LOKASI DATA & SANITIZATION:
-   - Kolom 'prod_number': HANYA ekstrak Product/Material Number/Part Number.
-     DILARANG KERAS mengisi prod_number dengan delivery number / nomor pengiriman.
-     Delivery number / nomor PL (10 digit angka, contoh: "2216158334") adalah NOMOR SISTEM
-     LOGISTIK — BUKAN product number. Jika description item mengandung product number
-     di awalnya (contoh: "LC1D12BD-D (SPHINX) 3P CONT..."), ekstrak "LC1D12BD-D" sebagai
-     prod_number, BUKAN nomor 10 digit yang ada di kolom delivery.
-   - Kolom 'number' (Urutan): Ekstrak hanya jika angka tertulis EKSPLISIT di tabel. Selalu integer.
-   - Sanitasi Angka: Hilangkan simbol satuan dan pemisah ribuan (koma). Format Number murni (misal: 1250.50).
-   - 'measurement' (Dimensi): Ekstrak sebagai string format PxLxT dalam CM (contoh: "80X60X75"). JANGAN ubah ke angka.
-`;
+export const instructions = '';
+export const invoiceInstructions = '';
+export const plInstructions = '';

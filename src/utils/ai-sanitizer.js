@@ -1,3 +1,5 @@
+/* eslint-disable camelcase */
+/* eslint-disable no-useless-escape */
 /* eslint-disable no-unused-vars */
 import logger from '../config/logger.js';
 
@@ -6,91 +8,123 @@ import logger from '../config/logger.js';
  */
 const repairTruncatedJson = (jsonString) => {
   let repaired = jsonString.trim();
+  repaired = repaired.replace(/[,\.\-:]\s*$/, '');
+  repaired = repaired.replace(/(tr|tru|fa|fal|fals|nu|nul)$/i, '');
 
-  // 1. Hapus trailing comma yang menggantung
-  repaired = repaired.replace(/,\s*$/, '');
-
-  // 2. Deteksi kutipan ganjil
-  let quoteCount = 0;
-  for (let i = 0; i < repaired.length; i++) {
-    if (repaired[i] === '"' && (i === 0 || repaired[i - 1] !== '\\')) {
-      quoteCount++;
-    }
-  }
-
-  // 3. Tutup string
-  if (quoteCount % 2 !== 0) repaired += '"';
-  repaired = repaired.replace(/,\s*$/, '');
-
-  // 4. LIFO Stack Array untuk menghitung kurung yang terbuka
-  const stack = [];
   let inString = false;
+  let i = 0;
+  while (i < repaired.length) {
+    if (repaired[i] === '\\' && inString) { i += 2; continue; }
+    if (repaired[i] === '"') inString = !inString;
+    i++;
+  }
+  if (inString) repaired += '"';
+  repaired = repaired.replace(/,\s*$/, '');
 
-  for (let i = 0; i < repaired.length; i++) {
-    if (repaired[i] === '"' && (i === 0 || repaired[i - 1] !== '\\')) {
-      inString = !inString;
-    }
+  const stack = [];
+  inString = false;
+  for (let j = 0; j < repaired.length; j++) {
+    if (repaired[j] === '\\' && inString) { j++; continue; }
+    if (repaired[j] === '"') { inString = !inString; continue; }
     if (!inString) {
-      if (repaired[i] === '{') stack.push('}');
-      else if (repaired[i] === '[') stack.push(']');
-      else if (repaired[i] === '}' || repaired[i] === ']') stack.pop();
+      if (repaired[j] === '{') stack.push('}');
+      else if (repaired[j] === '[') stack.push(']');
+      else if (repaired[j] === '}' || repaired[j] === ']') stack.pop();
     }
   }
-
-  // 5. Keluarkan isi stack (Last-In-First-Out) untuk menutup JSON dengan urutan yang BENAR
-  while (stack.length > 0) {
-    repaired += stack.pop();
-  }
-
+  while (stack.length > 0) repaired += stack.pop();
   return repaired;
 };
 
-const harvestArrayStrings = (rawText, log = logger) => {
-  log.warn({ event: 'harvester_triggered' }, 'The Harvester aktif: ekstraksi array secara kasar');
-
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX: Object Harvester — tidak berubah, sudah benar
+// ─────────────────────────────────────────────────────────────────────────────
+const harvestObjectStrings = (rawText, log = logger) => {
+  log.warn({ event: 'object_harvester_triggered' }, 'Object Harvester aktif untuk format Array of Objects');
   const results = [];
-  const regex = /"([^"\\]*(?:\\.[^"\\]*)*\|[^"\\]*(?:\\.[^"\\]*)*)"/g;
+  const regex = /\{[^{}]{10,}\}/g;
   let match;
   while ((match = regex.exec(rawText)) !== null) {
-    results.push(match[1]);
+    try {
+      const obj = JSON.parse(match[0]);
+      if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+        const hasCiplField = obj.prod_number || obj.package_number || obj.packing_list_number || obj.invoice_number;
+        if (hasCiplField) results.push(obj);
+      }
+    } catch (e) { /* skip */ }
   }
   if (results.length > 0) {
-    log.info({ event: 'harvester_success', rowCount: results.length },
-      `The Harvester memanen ${results.length} baris data`);
-
-    return results;
+    log.info(`[OBJECT-HARVESTER] Memanen ${results.length} objects`);
+    return { _is_harvested: true, harvested_items: results };
   }
-  throw new Error('Harvester tidak menemukan pola Array of Strings yang valid.');
+  throw new Error('Object Harvester tidak menemukan pola CIPL yang valid.');
 };
 
-export const cleanAIJson = (rawText, log = logger) => {
-  if (!rawText) throw new Error('Respons AI kosong (null/undefined).');
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX: harvestArrayStrings sekarang menerima parameter `domain`
+//
+// ROOT CAUSE: Sebelumnya Harvester mengembalikan { _is_harvested, harvested_rows }
+// tanpa informasi domain. parseItemsCsv tidak tahu apakah ini PL atau Invoice,
+// sehingga tidak bisa melakukan wrapping yang benar → data dibuang.
+//
+// FIX: Sertakan `domain` dalam output Harvester agar parseItemsCsv bisa
+// melakukan wrapping yang tepat ke struktur { item_headers, pl_list/invoices }.
+// ─────────────────────────────────────────────────────────────────────────────
+const harvestArrayStrings = (rawText, domain = null, log = logger) => {
+  log.warn({ event: 'harvester_triggered' }, 'The Harvester aktif: ekstraksi Array of Arrays secara kasar');
 
-  const cleanedText = rawText
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
-    .trim();
+  const results = [];
+  const regex = /\[\s*(?:\d+|"[^"\\]*(?:\\.[^"\\]*)*"|null)\s*,[\s\S]*?\]/g;
+  let match;
+
+  while ((match = regex.exec(rawText)) !== null) {
+    try {
+      const parsedRow = JSON.parse(match[0]);
+      if (Array.isArray(parsedRow) && parsedRow.length > 3) {
+        results.push(parsedRow);
+      }
+    } catch (e) { /* skip */ }
+  }
+
+  if (results.length > 0) {
+    log.info(
+      { event: 'harvester_success', rowCount: results.length, domain },
+      `The Harvester memanen ${results.length} baris (rows) data [domain: ${domain || 'unknown'}]`
+    );
+    // FIX: Sertakan domain dalam output
+    return { _is_harvested: true, harvested_rows: results, domain };
+  }
+
+  throw new Error('Harvester tidak menemukan pola rows (Array of Arrays) yang valid.');
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX: cleanAIJson sekarang menerima parameter `domain`
+// untuk diteruskan ke harvestArrayStrings
+// ─────────────────────────────────────────────────────────────────────────────
+export const cleanAIJson = (rawText, domain = null, log = logger) => {
+  if (!rawText) throw new Error('Respons AI kosong.');
+  const cleanedText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
 
   try {
     return JSON.parse(cleanedText);
-  } catch (error) {
+  } catch (e1) {
     try {
-      log.warn({ event: 'json_repair_attempt' }, 'JSON terpotong terdeteksi — mencoba perbaikan LIFO');
-
-      const repairedText = repairTruncatedJson(cleanedText);
-      return JSON.parse(repairedText);
-    } catch (repairError) {
+      log.warn({ event: 'json_repair_attempt' }, 'JSON terpotong — mencoba LIFO repair');
+      return JSON.parse(repairTruncatedJson(cleanedText));
+    } catch (e2) {
       try {
-        return harvestArrayStrings(cleanedText);
-      } catch (harvestError) {
-        log.error({
-          event: 'json_parse_failed',
-          repairError: repairError.message,
-          harvestError: harvestError.message,
-          rawTextPreview: rawText?.slice(0, 500), // Cukup 500 char untuk diagnosis
-        }, 'Gagal parsing JSON dari respons AI setelah semua upaya perbaikan');
-
-        throw new Error('Gagal mengekstrak data JSON dari respons AI. Format tidak valid setelah upaya perbaikan.');
+        return harvestArrayStrings(cleanedText, domain, log);
+      } catch (e3) {
+        try {
+          return harvestObjectStrings(cleanedText, log);
+        } catch (e4) {
+          log.error({
+            repair: e2.message, harvest: e3.message, objHarvest: e4.message,
+            preview: rawText?.slice(0, 500)
+          }, 'Semua upaya parsing gagal');
+          throw new Error('Gagal mengekstrak JSON dari respons AI.');
+        }
       }
     }
   }

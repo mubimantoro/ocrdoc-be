@@ -318,4 +318,4 @@ export const extractionWorker = new Worker('extraction-jobs', async (job) => {
   }
 }, { connection,
   concurrency: 20,
-  lockDuration: 5 * 60 * 1000 });
+  lockDuration: 30 * 60 * 1000 });

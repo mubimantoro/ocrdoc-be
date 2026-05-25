@@ -1,4 +1,8 @@
-import { instructions as ciplInstructions } from './rules/001.js';
+import {
+  instructions as ciplInstructions,
+  getInvoiceCompactPrompt,
+  getPlCompactPrompt
+} from './rules/001.js';
 import { instructions as plInstructions } from './rules/217.js';
 import { instructions as plExcelInstructions } from './rules/217_excel.js';
 import { instructions as invInstructions } from './rules/380.js';
@@ -104,7 +108,17 @@ CRITICAL DIRECTIVE FOR COO:
  * dokumen secara mandiri tanpa mapping kolom hardcode, karena format Excel
  * antar vendor berbeda-beda (grid tabular, hybrid template, dst).
  */
-export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false, globalContext = null) => {
+export const getItemOnlyExtractionPrompt = (docCode, schemaDefinition, isExcelToPdf = false, globalContext = null, domain = null) => {
+
+  // ================================================================
+  // JALUR CIPL N8N EMULATION (V12) — BYPASS MUTLAK 001
+  // Memanggil prompt n8n Array-of-Arrays untuk efisiensi token ekstrem
+  // ================================================================
+  if (docCode === '001') {
+    if (domain === 'pl') return getPlCompactPrompt();
+    if (domain === 'invoice') return getInvoiceCompactPrompt();
+  }
+
   const itemKey = schemaDefinition.invoice_list ? 'invoice_list[].items' : 'items';
 
   const contextInjection = globalContext
@@ -172,7 +186,7 @@ CRITICAL: Output harus berupa JSON array yang valid dan tertutup sempurna dengan
   }
 
   // ================================================================
-  // JALUR STANDAR — SEMUA DOKUMEN LAIN (001, 217 normal, 380, 861, dll)
+  // JALUR STANDAR — SEMUA DOKUMEN LAIN (217 normal, 380, 861, dll)
   // ================================================================
 
   // Pilih instruksi spesifik: gunakan varian _EXCEL jika ada dan relevan
