@@ -1,5 +1,4 @@
 import {
-  instructions as ciplInstructions,
   getInvoiceCompactPrompt,
   getPlCompactPrompt
 } from './rules/001.js';
@@ -15,7 +14,6 @@ import { instructions as blInstructions } from './rules/705.js';
 
 // Registry untuk instruksi spesifik dokumen
 const DOCUMENT_SPECIFIC_INSTRUCTIONS = {
-  '001': ciplInstructions,
   '217': plInstructions,
   '217_EXCEL': plExcelInstructions,
   '380': invInstructions,

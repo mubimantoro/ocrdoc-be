@@ -161,14 +161,17 @@ class SourceFileRepositories {
    */
   async finalizeMetrics(id) {
     const query = `
-      UPDATE source_files 
-      SET 
-        total_flagship_price = COALESCE((SELECT SUM(price) FROM documents WHERE source_file_id = $1), 0),
-        total_price_all = cheap_price + COALESCE((SELECT SUM(price) FROM documents WHERE source_file_id = $1), 0),
-        completed_at = CURRENT_TIMESTAMP,
-        status = 'completed', progress = 100, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 RETURNING *;
-    `;
+    UPDATE source_files 
+    SET 
+      total_flagship_price = COALESCE((SELECT SUM(price) FROM documents WHERE source_file_id = $1), 0),
+      total_flagship_token_input  = COALESCE((SELECT SUM(token_input) FROM documents WHERE source_file_id = $1), 0),
+      total_flagship_token_output = COALESCE((SELECT SUM(token_output) FROM documents WHERE source_file_id = $1), 0),
+      total_flagship_token_ocr = COALESCE((SELECT SUM(token_ocr) FROM documents WHERE source_file_id = $1), 0),
+      total_price_all = cheap_price + COALESCE((SELECT SUM(price) FROM documents WHERE source_file_id = $1), 0),
+      completed_at = CURRENT_TIMESTAMP,
+      status = 'completed', progress = 100, updated_at = CURRENT_TIMESTAMP
+    WHERE id = $1 RETURNING *;
+  `;
     const result = await pool.query(query, [id]);
     return result.rows[0];
   }

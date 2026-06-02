@@ -104,7 +104,10 @@ const harvestArrayStrings = (rawText, domain = null, log = logger) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const cleanAIJson = (rawText, domain = null, log = logger) => {
   if (!rawText) throw new Error('Respons AI kosong.');
-  const cleanedText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const markdownMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const cleanedText = markdownMatch
+    ? markdownMatch[1].trim()
+    : rawText.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
 
   try {
     return JSON.parse(cleanedText);

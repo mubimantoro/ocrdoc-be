@@ -21,9 +21,13 @@ export const formatSourceFileResponse = (record) => {
 
   const { duration_ms, duration_sec } = calculateDuration(record.started_at, record.completed_at);
 
-  const promptTokens = (record.cheap_token_input || 0) + (record.cheap_token_ocr || 0);
-  const outputTokens = record.cheap_token_output || 0;
-  const totalTokens = promptTokens + outputTokens;
+  const cheapPromptTokens  = (parseInt(record.cheap_token_input)  || 0) + (parseInt(record.cheap_token_ocr)  || 0);
+  const cheapOutputTokens  =  parseInt(record.cheap_token_output) || 0;
+
+  const flagshipPromptTokens = (parseInt(record.total_flagship_token_input)  || 0) + (parseInt(record.total_flagship_token_ocr) || 0);
+  const flagshipOutputTokens =  parseInt(record.total_flagship_token_output) || 0;
+
+  const totalTokens = cheapPromptTokens + cheapOutputTokens + flagshipPromptTokens + flagshipOutputTokens;
 
   return {
     id: record.id,
@@ -45,12 +49,16 @@ export const formatSourceFileResponse = (record) => {
     },
 
     ai_usage: {
-      model: record.ai_model,
-      prompt_tokens: promptTokens,
-      output_tokens: outputTokens,
-      total_tokens: totalTokens,
+      boundary_model: record.ai_model,
+      boundary_prompt_tokens:  cheapPromptTokens,
+      boundary_output_tokens:  cheapOutputTokens,
       cheap_model_price: parsePrice(record.cheap_price),
+
+      flagship_prompt_tokens: flagshipPromptTokens,
+      flagship_output_tokens: flagshipOutputTokens,
       flagship_model_price: parsePrice(record.total_flagship_price),
+
+      total_tokens: totalTokens,
       total_price: parsePrice(record.total_price_all)
     },
 

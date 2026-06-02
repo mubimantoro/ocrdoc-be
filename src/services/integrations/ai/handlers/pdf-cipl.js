@@ -1,18 +1,113 @@
-/* eslint-disable no-unused-vars */
 /* eslint-disable camelcase */
 import { PDFDocument } from 'pdf-lib';
 import { ai, MODELS } from '../../../../config/gemini.js';
 import { callGeminiWithRetry, extractOcrTokens, debugLog, parseItemsCsv } from '../helpers.js';
-import { getItemOnlyExtractionPrompt, getExtractionPrompt } from '../../../../prompts/extraction/index.js';
+import { getItemOnlyExtractionPrompt } from '../../../../prompts/extraction/index.js';
 import { getCIPLSectionBoundaryPrompt } from '../../../../prompts/boundary/doc-001.js';
 import { cleanAIJson } from '../../../../utils/ai-sanitizer.js';
 import logger from '../../../../config/logger.js';
+import fs from 'fs/promises';
+import path from 'path';
 
-const CONCURRENCY_LIMIT = 4;
+// ─── n8n-aligned batch sizes ─────────────────────────────────────────────────
+const CONCURRENCY_LIMIT  = 2;
+const PL_BATCH_SIZE      = 5; // n8n: 5
+const INVOICE_BATCH_SIZE = 5; // n8n: 5
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-const limitConcurrency = async (concurrencyLimit, items, asyncFn, log, delayMs = 300) => {
-  const results = new Array(items.length);
+// ─── Page debug helpers (tidak berubah) ──────────────────────────────────────
+let _pageDebugDir = null;
+let _runId        = null;
+
+const initPageDebug = (docCode) => {
+  const baseDir = process.env.PAGE_DEBUG_DIR;
+  if (!baseDir) return;
+  _runId        = Date.now();
+  _pageDebugDir = path.join(baseDir, `${docCode}_${_runId}`);
+};
+
+const writePageDebugLog = async (domain, pageNum, rawAiOutput, parsedResult, meta = {}) => {
+  if (!_pageDebugDir) return;
+  try {
+    await fs.mkdir(_pageDebugDir, { recursive: true });
+    const plEntries  = parsedResult?.pl_list      || [];
+    const invEntries = parsedResult?.invoice_list || [];
+    const targetList = domain === 'pl' ? plEntries : invEntries;
+    const summary = {
+      page:          pageNum,
+      domain,
+      timestamp:     new Date().toISOString(),
+      token_usage:   meta.tokens || null,
+      entries_count: targetList.length,
+      entries: targetList.map((entry) => {
+        if (domain === 'pl') {
+          const items = entry.items || [];
+          const pkgs  = [...new Set(items.map((i) => i.package_number).filter(Boolean))];
+          return {
+            packing_list_number: entry.packing_list_number,
+            invoice_number:      entry.invoice_number,
+            items_count:         items.length,
+            unique_pkg_numbers:  pkgs.length,
+            pkg_numbers_sample:  pkgs.slice(0, 5),
+            flag_pkg_collapse:   pkgs.length > 3,
+            flag_null_pl_number: !entry.packing_list_number,
+          };
+        }
+        const items = entry.items || [];
+        return {
+          invoice_number:  entry.invoice_number,
+          items_count:     items.length,
+          has_null_number: items.some((i) => i.number == null),
+          has_null_prod:   items.some((i) => !i.prod_number),
+          pkg_ref_count:   items.filter((i) => i.packaging_type_item).length,
+        };
+      }),
+      flags: {
+        has_null_pl_number: domain === 'pl' && targetList.some((e) => !e.packing_list_number),
+        has_pkg_collapse:   domain === 'pl' && targetList.some((e) => {
+          const pkgs = [...new Set((e.items || []).map((i) => i.package_number).filter(Boolean))];
+          return pkgs.length > 3;
+        }),
+        zero_entries: targetList.length === 0,
+      },
+      raw_output_file: `page_${domain}_${pageNum}_raw.json`,
+    };
+    const summaryFile = path.join(_pageDebugDir, `page_${domain}_${pageNum}.json`);
+    const rawFile     = path.join(_pageDebugDir, `page_${domain}_${pageNum}_raw.json`);
+    await fs.writeFile(summaryFile, JSON.stringify(summary, null, 2));
+    await fs.writeFile(rawFile,     JSON.stringify(rawAiOutput ?? parsedResult, null, 2));
+  } catch (err) {
+    logger.warn(`[PAGE-DEBUG] Gagal tulis log halaman ${pageNum}: ${err.message}`);
+  }
+};
+
+const writePageDebugIndex = async (domain, allSummaries) => {
+  if (!_pageDebugDir) return;
+  try {
+    const flagged = allSummaries.filter((s) =>
+      s?.flags?.has_null_pl_number ||
+      s?.flags?.has_pkg_collapse   ||
+      s?.flags?.zero_entries
+    );
+    const index = {
+      domain,
+      run_id:        _runId,
+      total_pages:   allSummaries.length,
+      total_entries: allSummaries.reduce((acc, s) => acc + (s?.entries_count || 0), 0),
+      flagged_pages: flagged.map((s) => ({ page: s.page, flags: s.flags, entries: s.entries_count })),
+      per_page:      allSummaries.map((s) => ({ page: s?.page, entries: s?.entries_count ?? 0, flags: s?.flags ?? {} })),
+    };
+    const indexFile = path.join(_pageDebugDir, `_INDEX_${domain}.json`);
+    await fs.writeFile(indexFile, JSON.stringify(index, null, 2));
+    logger.info(`[PAGE-DEBUG] Index tersimpan: ${indexFile}`);
+    logger.info(`[PAGE-DEBUG] ${flagged.length} halaman bermasalah dari ${allSummaries.length} total`);
+  } catch (err) {
+    logger.warn(`[PAGE-DEBUG] Gagal tulis index: ${err.message}`);
+  }
+};
+
+// ─── Concurrency & PDF helpers (tidak berubah) ───────────────────────────────
+const limitConcurrency = async (concurrencyLimit, items, asyncFn, log, delayMs = 1500) => {
+  const results  = new Array(items.length);
   const executing = new Set();
   for (let i = 0; i < items.length; i++) {
     const idx = i;
@@ -32,12 +127,12 @@ const limitConcurrency = async (concurrencyLimit, items, asyncFn, log, delayMs =
 };
 
 const extractPageBuffer = async (pdfDoc, startPage, endPage, exclude = []) => {
-  const singlePdf = await PDFDocument.create();
-  const numPages = pdfDoc.getPageCount();
-  const startIndex = Math.max(0, startPage - 1);
-  const endIndex = Math.min(numPages - 1, endPage - 1);
-  const excludeSet = new Set(exclude.map((p) => p - 1));
-  const indices = [];
+  const singlePdf   = await PDFDocument.create();
+  const numPages    = pdfDoc.getPageCount();
+  const startIndex  = Math.max(0, startPage - 1);
+  const endIndex    = Math.min(numPages - 1, endPage - 1);
+  const excludeSet  = new Set(exclude.map((p) => p - 1));
+  const indices     = [];
   for (let i = startIndex; i <= endIndex; i++) if (!excludeSet.has(i)) indices.push(i);
   if (indices.length === 0) return null;
   const pages = await singlePdf.copyPages(pdfDoc, indices);
@@ -45,85 +140,122 @@ const extractPageBuffer = async (pdfDoc, startPage, endPage, exclude = []) => {
   return Buffer.from(await singlePdf.save());
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// FIX v14.3 BUG-A: executeGeminiCall — max_tokens naik per domain
-// ─────────────────────────────────────────────────────────────────────────────
-// BEFORE: callConfig = { ..., maxOutputTokens: 1000 } hardcoded
-//         → 55× json_repair_attempt per run, PL dense rows terpotong
-// AFTER:  pl=6000 (window 2 hal), invoice=3000, header/default=2000
-// ════════════════════════════════════════════════════════════════════════════
+const chunkArray = (arr, size) => {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  return chunks;
+};
+
+const extractBatchBuffer = (pdfDoc, batch) => {
+  if (!batch || batch.length === 0) return Promise.resolve(null);
+  const minPage  = Math.min(...batch);
+  const maxPage  = Math.max(...batch);
+  const batchSet = new Set(batch);
+  const gaps     = [];
+  for (let p = minPage; p <= maxPage; p++) {
+    if (!batchSet.has(p)) gaps.push(p);
+  }
+  return extractPageBuffer(pdfDoc, minPage, maxPage, gaps);
+};
+
 const executeGeminiCall = async (promptData, buffer, log, tokenUsage, domain = null) => {
-  const maxTokensByDomain = { pl: 6000, invoice: 3000, header: 2000 };
-  const maxOutputTokens = maxTokensByDomain[domain] || 2000;
-  const callConfig = { responseMimeType: 'application/json', temperature: 0.0, maxOutputTokens };
-  const response = await callGeminiWithRetry(
+  const maxOutputTokens = 65536;
+  const callConfig      = { responseMimeType: 'text/plain', temperature: 0.0, maxOutputTokens };
+  const response        = await callGeminiWithRetry(
     [promptData, { inlineData: { data: buffer.toString('base64'), mimeType: 'application/pdf' } }],
     3, callConfig, log, domain
   );
   const meta = response.usageMetadata || {};
-  tokenUsage.inputTotal += meta.promptTokenCount || 0;
-  tokenUsage.output    += meta.candidatesTokenCount || 0;
-  tokenUsage.ocr       += extractOcrTokens(meta);
-  tokenUsage.total     += meta.totalTokenCount || 0;
-  return response.parsedData;
+  tokenUsage.inputTotal += meta.promptTokenCount    || 0;
+  tokenUsage.output     += meta.candidatesTokenCount || 0;
+  tokenUsage.ocr        += extractOcrTokens(meta);
+  tokenUsage.total      += meta.totalTokenCount     || 0;
+  return { parsedData: response.parsedData, tokens: meta.totalTokenCount || 0 };
 };
 
-// ── FIX RC-2: isValidPackageNumber ───────────────────────────────────────────
-const isValidPackageNumber = (pkgNum) => {
-  if (pkgNum === null || pkgNum === undefined) return false;
-  const s = String(pkgNum).trim();
-  return s !== '';
-};
-
-// ════════════════════════════════════════════════════════════════════════════
-// FIX v14.3 BUG-B: isHeaderPollutionRow
-// ─────────────────────────────────────────────────────────────────────────────
-// ROOT CAUSE: Gemini kadang mengembalikan baris dengan nilai persis nama field
-// (prod_number="prod_number", brand="brand", dll) saat halaman kosong atau
-// halaman pertama sebelum data muncul. Row ini lolos ke output.
-// CONTOH dari raw: { "prod_number":"prod_number", "brand":"brand",
-//   "gross_weight":0, "measurement":"measurement", ... }
-// ════════════════════════════════════════════════════════════════════════════
+// ─── Header pollution filter (tidak berubah) ─────────────────────────────────
 const PLACEHOLDER_STRINGS = new Set([
   'prod_number', 'package_number', 'description', 'brand', 'origin',
   'measurement', 'quantity_unit', 'packaging_type', 'packaging_unit',
   'number', 'prod number', 'package number', 'item_number',
 ]);
+
 const isHeaderPollutionRow = (item) => {
   if (!item) return true;
-  const prodStr = item.prod_number != null ? String(item.prod_number).toLowerCase().trim() : '';
+  const prodStr = item.prod_number    != null ? String(item.prod_number).toLowerCase().trim()    : '';
   const pkgStr  = item.package_number != null ? String(item.package_number).toLowerCase().trim() : '';
   if (prodStr && PLACEHOLDER_STRINGS.has(prodStr)) return true;
   if (pkgStr  && PLACEHOLDER_STRINGS.has(pkgStr))  return true;
   return false;
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// FIX v14.3 BUG-C: normalizeWeight — gross/net weight 0 → null
-// ROOT CAUSE: Gemini baca kolom kosong sebagai 0, bukan null
-// ════════════════════════════════════════════════════════════════════════════
-const normalizeWeight = (val) =>
-  (val === null || val === undefined || val === 0) ? null : val;
+// ─── Invoice dedup (tidak berubah) ───────────────────────────────────────────
+const countNonNull = (obj) =>
+  Object.values(obj).filter((v) => v != null && v !== '' && !(Array.isArray(v) && v.length === 0)).length;
 
-// ════════════════════════════════════════════════════════════════════════════
-// FIX v14.3 BUG-D: normalizePackagingUnit
-// ROOT CAUSE: PALLET dengan unit "CT" (seharusnya "PLT") — Gemini salah baca
-// ════════════════════════════════════════════════════════════════════════════
-const PACKAGING_UNIT_MAP = {
-  PALLET: 'PLT', PALLETS: 'PLT',
-  CARTON: 'CT',  CARTONS: 'CT',
-  BOX: 'BOX',    BOXES: 'BOX',
-  CRATE: 'CRT',  DRUM: 'DRM',  BAG: 'BAG',
-};
-const normalizePackagingUnit = (packagingType, packagingUnit) => {
-  if (!packagingType) return packagingUnit;
-  return PACKAGING_UNIT_MAP[packagingType.toUpperCase()] ?? packagingUnit;
+const deduplicateInvoiceItems = (items) => {
+  const byNumber = new Map();
+  const noNumber = [];
+  for (const item of items) {
+    if (item.number != null) {
+      const key = item.number;
+      if (!byNumber.has(key) || countNonNull(item) > countNonNull(byNumber.get(key))) {
+        byNumber.set(key, item);
+      }
+    } else {
+      noNumber.push(item);
+    }
+  }
+  return [...Array.from(byNumber.values()), ...noNumber];
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// FIX v14.3 BUG-E: calculateTotal via integer cents
-// ROOT CAUSE: JS float accumulation → 318301.7099999954
-// ════════════════════════════════════════════════════════════════════════════
+// ─── PL dedup — n8n Strategy B: flat key merge ───────────────────────────────
+//
+// Urutan prioritas merge key (identik dengan n8n node "merge / reduce1"):
+//   1. package_number  → key: "pkg::{package_number}"
+//   2. prod_number     → key: "prod::{prod_number}"
+//   3. tidak keduanya  → key unik, tidak di-merge
+//
+// Merge rule: non-null wins — field yang sudah terisi tidak ditimpa.
+//
+const deduplicatePlItems = (plKey, items) => {
+  const mergeMap   = new Map();
+  const orderedKeys = [];
+  let unmergedIdx  = 0;
+
+  for (const item of items) {
+    const pkgStr = item.package_number != null && String(item.package_number).trim() !== ''
+      ? String(item.package_number).trim()
+      : null;
+
+    let key;
+    if (pkgStr) {
+      key = `pkg::${pkgStr}`;
+    } else if (item.prod_number) {
+      key = `prod::${item.prod_number}`;
+    } else {
+      // Tidak bisa di-merge — key unik per item
+      key = `unmerged::${unmergedIdx++}`;
+    }
+
+    if (!mergeMap.has(key)) {
+      mergeMap.set(key, { ...item });
+      orderedKeys.push(key);
+    } else {
+      // Non-null wins: isi field yang kosong dari entry berikutnya
+      const existing = mergeMap.get(key);
+      for (const [field, val] of Object.entries(item)) {
+        if (existing[field] === null || existing[field] === undefined) {
+          existing[field] = val;
+        }
+      }
+    }
+  }
+
+  return orderedKeys.map((k) => mergeMap.get(k));
+};
+
+// ─── Utilities ───────────────────────────────────────────────────────────────
 const calculateTotal = (invoiceList) => {
   let totalCents = 0;
   for (const invoice of invoiceList) {
@@ -134,10 +266,6 @@ const calculateTotal = (invoiceList) => {
   return Math.round(totalCents) / 100;
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// FIX v14.3 BUG-F: resolveRootOrigin
-// ROOT CAUSE: origin null di header padahal ada di item-level invoice
-// ════════════════════════════════════════════════════════════════════════════
 const resolveRootOrigin = (headerData, invoiceList) => {
   if (headerData.origin) return headerData.origin;
   for (const invoice of invoiceList) {
@@ -147,146 +275,166 @@ const resolveRootOrigin = (headerData, invoiceList) => {
   return null;
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// Header extraction prompt
-// ════════════════════════════════════════════════════════════════════════════
-const getCiplHeaderExtractionPrompt = () => `Ekstrak informasi HEADER dari dokumen CIPL (Commercial Invoice & Packing List) ini.
-Fokus HANYA pada halaman pertama atau halaman yang berisi informasi pengirim/penerima.
+// ─── Header prompt — sesuai n8n schema (tambah "total", hapus confidence_score)
+const getCiplHeaderExtractionPrompt = () =>
+  `Ekstrak informasi HEADER dari dokumen CIPL (Commercial Invoice & Packing List) ini.
+Hanya extract yang secara eksplisit tertulis dan sesuai dengan skema yang diberikan.
+Jika ada indikator dimana valuenya secara reasoning kamu temukan, maka hanya isi jika
+indikatornya kuat, misalnya di atas 70% yakin.
 
-Kembalikan JSON dengan struktur berikut (tanpa markdown fence):
+Output HARUS berupa JSON valid dengan struktur berikut (tanpa markdown fence):
 {
-  "seller_name": "nama shipper/eksportir",
+  "packing_list_date": "YYYY-MM-DD",
+  "seller_name": "nama shipper",
   "seller_address": "alamat lengkap shipper",
   "seller_country": "negara asal pengirim",
-  "seller_country_code": "kode 2 huruf (ISO 3166)",
+  "seller_country_code": "kode 2 huruf ISO 3166-1 alpha-2",
   "seller_phone": "nomor telepon shipper",
-  "buyer_name": "nama consignee/importir",
+  "buyer_name": "nama consignee",
   "buyer_address": "alamat lengkap buyer",
   "buyer_country": "negara tujuan",
-  "buyer_country_code": "kode 2 huruf (ISO 3166)",
+  "buyer_country_code": "kode 2 huruf ISO 3166-1 alpha-2",
   "buyer_phone": "nomor telepon buyer",
   "buyer_tax": "NPWP atau tax ID buyer",
-  "ship_to": "nama/alamat tujuan pengiriman (jika berbeda dari buyer)",
-  "ship_to_city": "kota tujuan pengiriman",
-  "shipment_date": "tanggal pengiriman format YYYY-MM-DD",
-  "payment_terms": "term pembayaran (misal: T/T, L/C, Net 30)",
-  "payment_terms_code": "kode singkat (TT, LC, dll)",
-  "inco_terms": "incoterm (misal: FOB, CIF, EXW)",
-  "freight_terms": "freight terms jika ada",
+  "ship_to": "nama atau alamat tujuan pengiriman",
+  "ship_to_city": "kota tujuan",
+  "shipment_date": "YYYY-MM-DD",
+  "payment_terms": "term pembayaran",
+  "payment_terms_code": "kode singkat term",
+  "inco_terms": "incoterm",
+  "freight_terms": "freight terms",
   "origin": "negara asal barang",
-  "ultimate_dest": "tujuan akhir barang",
-  "currency_code": "kode mata uang (USD, EUR, dll)",
-  "packaging_total": "total jumlah kemasan (angka)",
-  "packaging_type": "jenis kemasan dominan (CARTON, PALLET, dll)",
-  "packing_list_date": "tanggal packing list format YYYY-MM-DD",
-  "confidence_score": 0.95
-}
-
-ATURAN KETAT:
-1. Jika field tidak ditemukan di dokumen → null (JANGAN menebak)
-2. Tanggal WAJIB format YYYY-MM-DD
-3. confidence_score: persentase keyakinan 0.0-1.0
-4. Output HANYA JSON valid, tidak ada komentar atau markdown`;
-
-// ════════════════════════════════════════════════════════════════════════════
-// FIX RC-1: Sliding Window — PL extraction 2 halaman per call
-// ════════════════════════════════════════════════════════════════════════════
-const PL_WINDOW_SIZE = 2;
-
-const getPlWindowExtractionPrompt = (docCode, jsonSchema, windowSize) => {
-  const basePrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema, false, null, 'pl');
-  const windowContext = `INSTRUKSI PENTING — MULTI-PAGE CONTEXT:
-Anda menerima ${windowSize} halaman PDF sekaligus.
-- Halaman 1 s/d ${windowSize - 1}: halaman KONTEKS (untuk referensi nomor PL, header, dll)
-- Halaman ${windowSize}: halaman TARGET yang harus di-extract
-
-ATURAN:
-1. Ekstrak data item HANYA dari halaman TARGET (halaman terakhir).
-2. Gunakan halaman konteks HANYA untuk mengisi field yang tidak ditemukan di halaman target,
-   terutama: packing_list_number, packing_list_date, invoice_number.
-3. Jika packing_list_number tidak ada di halaman target, cari di halaman konteks.
-4. Jangan ekstrak item dari halaman konteks — hanya dari halaman target.
-
-`;
-  if (typeof basePrompt === 'string') return windowContext + basePrompt;
-  if (Array.isArray(basePrompt)) return [windowContext + (basePrompt[0] || ''), ...basePrompt.slice(1)];
-  return windowContext + String(basePrompt);
-};
+  "ultimate_dest": "tujuan akhir pengiriman",
+  "total": null,
+  "currency_code": "kode mata uang ISO 4217",
+  "packaging_total": null,
+  "packaging_type": "jenis kemasan"
+}`;
 
 // ════════════════════════════════════════════════════════════════════════════
 export const processCiplPdfExtraction = async (
   fileBuffer, docCode, prompt, jsonSchema, tokenUsage, log = logger
 ) => {
-  log.info({ event: 'cipl_extraction_start' }, 'Memulai CIPL Pipeline v14.3');
+  log.info(
+    { event: 'cipl_extraction_start' },
+    'Memulai CIPL Pipeline v15.0 (n8n-aligned: PL_BATCH=5, INV_BATCH=5)'
+  );
+  initPageDebug(docCode);
 
   const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
 
-  // ── processInvoicePages: 1 page per call ─────────────────────────────────
-  const processInvoicePages = async (pages, domain = null) => {
+  // ── Worker: Invoice ─────────────────────────────────────────────────────
+  const processInvoicePages = async (pages, domain = 'invoice') => {
     if (!pages || pages.length === 0) return [];
-    log.info(`[WORKER] Invoice: ${pages.length} halaman, concurrency=${CONCURRENCY_LIMIT}`);
-    const chunkResults = [];
+    const batches = chunkArray(pages, INVOICE_BATCH_SIZE);
+    log.info(
+      `[WORKER] Invoice: ${pages.length} halaman → ${batches.length} batch` +
+      ` (batchSize=${INVOICE_BATCH_SIZE}), concurrency=${CONCURRENCY_LIMIT}`
+    );
+    const pageSummaries = [];
+    const chunkResults  = [];
     const settled = await limitConcurrency(
-      CONCURRENCY_LIMIT, pages,
-      async (pageTarget) => {
-        const buffer = await extractPageBuffer(pdfDoc, pageTarget, pageTarget, []);
+      CONCURRENCY_LIMIT, batches,
+      async (batch) => {
+        const buffer = await extractBatchBuffer(pdfDoc, batch);
         if (!buffer) return null;
         const targetPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema, false, null, domain);
-        const parsedData = await executeGeminiCall(targetPrompt, buffer, log, tokenUsage, domain);
+        const { parsedData, tokens } = await executeGeminiCall(targetPrompt, buffer, log, tokenUsage, domain);
         if (parsedData) parseItemsCsv(parsedData, docCode, domain);
-        return parsedData;
-      },
-      log, 300
-    );
-    for (const s of settled) {
-      if (s.status === 'fulfilled' && s.value) chunkResults.push(s.value);
-      else if (s.status === 'rejected') {
-        log.error({ event: 'invoice_page_failed', page: s.item },
-          `[INVOICE] Halaman ${s.item} gagal total setelah 3 retry — data hilang`);
-      }
-    }
-    return chunkResults;
-  };
-
-  // ── processPlPages: sliding window 2 halaman per call ────────────────────
-  const processPlPages = async (pages, allPlPages, domain = 'pl') => {
-    if (!pages || pages.length === 0) return [];
-    log.info(`[WORKER] PL: ${pages.length} halaman, sliding window (size=${PL_WINDOW_SIZE}), concurrency=${CONCURRENCY_LIMIT}`);
-    const plPageSet = new Set(allPlPages);
-    const chunkResults = [];
-    const settled = await limitConcurrency(
-      CONCURRENCY_LIMIT, pages,
-      async (pageTarget) => {
-        const contextPages = [];
-        for (let lookback = PL_WINDOW_SIZE - 1; lookback >= 1; lookback--) {
-          const candidate = pageTarget - lookback;
-          if (candidate > 0 && plPageSet.has(candidate)) contextPages.push(candidate);
+        const repPage = batch[0];
+        const summary = { page: repPage, batch, domain, entries_count: 0, flags: {}, entries: [] };
+        if (parsedData) {
+          const list            = parsedData.invoice_list || [];
+          summary.entries_count = list.length;
+          summary.entries       = list.map((e) => ({
+            invoice_number: e.invoice_number,
+            items_count:    (e.items || []).length,
+          }));
+          summary.flags.zero_entries = list.length === 0;
+          summary.tokens             = tokens;
         }
-        const startPage = contextPages.length > 0 ? contextPages[0] : pageTarget;
-        const buffer = await extractPageBuffer(pdfDoc, startPage, pageTarget, []);
-        if (!buffer) return null;
-        const windowSize = pageTarget - startPage + 1;
-        const targetPrompt = windowSize > 1
-          ? getPlWindowExtractionPrompt(docCode, jsonSchema, windowSize)
-          : getItemOnlyExtractionPrompt(docCode, jsonSchema, false, null, domain);
-        const parsedData = await executeGeminiCall(targetPrompt, buffer, log, tokenUsage, domain);
-        if (parsedData) parseItemsCsv(parsedData, docCode, domain);
-        log.debug(`[PL-WINDOW] page ${pageTarget}: context=[${contextPages.join(',')}] window=${windowSize}`);
+        await writePageDebugLog(domain, repPage, null, parsedData, { tokens });
+        pageSummaries.push(summary);
         return parsedData;
       },
-      log, 300
+      log, 1500
     );
     for (const s of settled) {
       if (s.status === 'fulfilled' && s.value) chunkResults.push(s.value);
-      else if (s.status === 'rejected') {
-        log.error({ event: 'pl_page_failed', page: s.item },
-          `[PL] Halaman ${s.item} gagal total setelah 3 retry — data hilang`);
-      }
+      else if (s.status === 'rejected')
+        log.warn(
+          { event: 'batch_failed', pages: s.item, reason: s.reason?.message },
+          '[WORKER] Batch gagal setelah max retry — data halaman ini hilang'
+        );
     }
+    await writePageDebugIndex(domain, pageSummaries);
     return chunkResults;
   };
 
-  // ── Fase 1: Boundary Detection ────────────────────────────────────────────
+  // ── Worker: Packing List ─────────────────────────────────────────────────
+  const processPlPages = async (pages, domain = 'pl') => {
+    if (!pages || pages.length === 0) return [];
+    const batches = chunkArray(pages, PL_BATCH_SIZE);
+    log.info(
+      `[WORKER] PL: ${pages.length} halaman → ${batches.length} batch` +
+      ` (batchSize=${PL_BATCH_SIZE}), concurrency=${CONCURRENCY_LIMIT}`
+    );
+    const pageSummaries = [];
+    const chunkResults  = [];
+    const settled = await limitConcurrency(
+      CONCURRENCY_LIMIT, batches,
+      async (batch) => {
+        const buffer = await extractBatchBuffer(pdfDoc, batch);
+        if (!buffer) return null;
+        const targetPrompt = getItemOnlyExtractionPrompt(docCode, jsonSchema, false, null, domain);
+        const { parsedData, tokens } = await executeGeminiCall(targetPrompt, buffer, log, tokenUsage, domain);
+        if (parsedData) parseItemsCsv(parsedData, docCode, domain);
+        const repPage = batch[0];
+        const summary = { page: repPage, batch, domain, entries_count: 0, flags: {}, entries: [], tokens };
+        if (parsedData) {
+          const list            = parsedData.pl_list || [];
+          summary.entries_count = list.length;
+          summary.entries       = list.map((e) => {
+            const items = e.items || [];
+            const pkgs  = [...new Set(items.map((i) => i.package_number).filter(Boolean))];
+            return {
+              packing_list_number: e.packing_list_number,
+              invoice_number:      e.invoice_number,
+              items_count:         items.length,
+              unique_pkg_count:    pkgs.length,
+              pkg_sample:          pkgs.slice(0, 4),
+              flag_null_pl_number: !e.packing_list_number,
+              flag_pkg_collapse:   pkgs.length > 3,
+            };
+          });
+          summary.flags = {
+            zero_entries:       list.length === 0,
+            has_null_pl_number: list.some((e) => !e.packing_list_number),
+            has_pkg_collapse:   list.some((e) => {
+              const pkgs = [...new Set((e.items || []).map((i) => i.package_number).filter(Boolean))];
+              return pkgs.length > 3;
+            }),
+          };
+        }
+        await writePageDebugLog(domain, repPage, null, parsedData, { tokens });
+        pageSummaries.push(summary);
+        return parsedData;
+      },
+      log, 1500
+    );
+    for (const s of settled) {
+      if (s.status === 'fulfilled' && s.value) chunkResults.push(s.value);
+      else if (s.status === 'rejected')
+        log.warn(
+          { event: 'batch_failed', pages: s.item, reason: s.reason?.message },
+          '[WORKER] Batch gagal setelah max retry — data halaman ini hilang'
+        );
+    }
+    await writePageDebugIndex(domain, pageSummaries);
+    return chunkResults;
+  };
+
+  // ── Fase 1: Boundary Scan ────────────────────────────────────────────────
   log.info({ event: 'cipl_boundary_scan' }, 'Fase 1: Scanning boundary...');
   const boundaryResponse = await ai.models.generateContent({
     model: MODELS.CHEAP,
@@ -297,34 +445,19 @@ export const processCiplPdfExtraction = async (
     config: { responseMimeType: 'application/json', temperature: 0.1 },
   });
   const rawBoundary = cleanAIJson(boundaryResponse.text) || {};
-  const b = Array.isArray(rawBoundary) ? (rawBoundary[0] || {}) : rawBoundary;
+  const b           = Array.isArray(rawBoundary) ? (rawBoundary[0] || {}) : rawBoundary;
 
-  const formatRange = (range) => {
-    if (!range || !range.start) return 'N/A';
-    const excl = (range.exclude?.length > 0) ? ` (Exclude: ${range.exclude.join(', ')})` : '';
-    return `Hal ${range.start} - ${range.end}${excl}`;
-  };
-  log.info({
-    event: 'cipl_boundary_result',
-    header_range:        b.page_contain_header,
-    invoice_range:       b.page_contain_invoice_data,
-    pl_range:            b.page_contain_packing_list_data,
-    summary:             b.document_summary_page,
-    is_pl_header_repeated: b.pl_header_repeated,
-  }, `[BOUNDARY] Header: ${formatRange(b.page_contain_header)} | Invoice: ${formatRange(b.page_contain_invoice_data)} | PL: ${formatRange(b.page_contain_packing_list_data)} | Summary: ${b.is_document_contain_summary ? formatRange(b.document_summary_page) : 'Tidak Ada'}`);
+  log.info({ event: 'cipl_boundary_result', boundary: b }, 'Boundary scan selesai');
 
+  // ── Summary pages ────────────────────────────────────────────────────────
   const summaryPages = new Set();
   if (b.is_document_contain_summary && b.document_summary_page) {
     const sp = b.document_summary_page;
-    const spExclude = new Set(sp.exclude || []);
-    if (sp.start && sp.end) {
-      for (let i = sp.start; i <= sp.end; i++) {
-        if (!spExclude.has(i)) summaryPages.add(i);
-      }
-    }
+    if (Array.isArray(sp.pages)) sp.pages.forEach((page) => summaryPages.add(page));
   }
 
-  const invExclude = new Set([...(b.page_contain_invoice_data?.exclude || []), ...summaryPages]);
+  // ── Page range computation ───────────────────────────────────────────────
+  const invExclude  = new Set([...(b.page_contain_invoice_data?.exclude || []), ...summaryPages]);
   const invoicePages = [];
   if (b.page_contain_invoice_data?.start) {
     for (let i = b.page_contain_invoice_data.start; i <= b.page_contain_invoice_data.end; i++) {
@@ -332,315 +465,246 @@ export const processCiplPdfExtraction = async (
     }
   }
 
-  const allPlPages = [];
   const plExclude = new Set([...(b.page_contain_packing_list_data?.exclude || []), ...summaryPages]);
-  const plPages = [];
+  const plPages   = [];
   if (b.page_contain_packing_list_data?.start) {
     for (let i = b.page_contain_packing_list_data.start; i <= b.page_contain_packing_list_data.end; i++) {
-      allPlPages.push(i);
       if (!plExclude.has(i)) plPages.push(i);
     }
   }
 
-  // ── Fase 0: Header Extraction ─────────────────────────────────────────────
+  log.info({
+    event:         'cipl_page_ranges',
+    invoice_pages: invoicePages.length,
+    pl_pages:      plPages.length,
+    summary_pages: summaryPages.size,
+  }, 'Range halaman terdeteksi');
+
+  // ── Fase 0: Header Extraction ────────────────────────────────────────────
   log.info({ event: 'cipl_header_extraction' }, 'Fase 0: Header extraction...');
-  let headerData = {};
+  let headerData   = {};
   const headerRange = b.page_contain_header;
   if (headerRange?.start) {
-    const headerBuffer = await extractPageBuffer(
-      pdfDoc, headerRange.start, headerRange.end || headerRange.start, headerRange.exclude || []
-    );
+    const rawHeaderPages = [];
+    for (let i = headerRange.start; i <= (headerRange.end ?? headerRange.start); i++) {
+      if (!(headerRange.exclude || []).includes(i)) rawHeaderPages.push(i);
+    }
+    // Max 3 header pages + first invoice page + first PL page (konteks, sesuai n8n)
+    const headerPages   = rawHeaderPages.slice(0, 3);
+    const firstInvoice  = b.page_contain_invoice_data?.start;
+    const firstPL       = b.page_contain_packing_list_data?.start;
+    const selectedPages = Array.from(
+      new Set([...headerPages, ...(firstInvoice ? [firstInvoice] : []), ...(firstPL ? [firstPL] : [])])
+    ).sort((a, c) => a - c);
+
+    const headerBuffer = await (async () => {
+      const doc         = await PDFDocument.create();
+      const totalPages  = pdfDoc.getPageCount();
+      const validIdx    = selectedPages.map((p) => p - 1).filter((idx) => idx >= 0 && idx < totalPages);
+      if (validIdx.length === 0) return null;
+      const copied = await doc.copyPages(pdfDoc, validIdx);
+      copied.forEach((p) => doc.addPage(p));
+      return Buffer.from(await doc.save());
+    })();
+
     if (headerBuffer) {
       try {
         const headerResponse = await callGeminiWithRetry(
-          [getCiplHeaderExtractionPrompt(), { inlineData: { data: headerBuffer.toString('base64'), mimeType: 'application/pdf' } }],
-          3, { responseMimeType: 'application/json', temperature: 0.0 }, log, 'header'
+          [
+            getCiplHeaderExtractionPrompt(),
+            { inlineData: { data: headerBuffer.toString('base64'), mimeType: 'application/pdf' } },
+          ],
+          3, { responseMimeType: 'text/plain', temperature: 0.0 }, log, 'header'
         );
         headerData = headerResponse.parsedData || {};
         log.info({
-          event: 'cipl_header_extracted',
-          fields: Object.keys(headerData).filter((k) => headerData[k] !== null).length,
-        }, 'Header berhasil diekstrak');
+          event:          'cipl_header_ok',
+          selected_pages: selectedPages,
+          fields:         Object.keys(headerData).filter((k) => headerData[k] !== null).length,
+        }, 'Header extracted');
       } catch (err) {
-        log.warn({ event: 'cipl_header_failed', err: err.message }, 'Header extraction gagal, lanjut tanpa header');
-      }
-    }
-  } else {
-    log.warn({ event: 'cipl_header_fallback' }, 'Tidak ada page_contain_header dari boundary, gunakan halaman 1-2');
-    const fallbackBuffer = await extractPageBuffer(pdfDoc, 1, 2, []);
-    if (fallbackBuffer) {
-      try {
-        const headerResponse = await callGeminiWithRetry(
-          [getCiplHeaderExtractionPrompt(), { inlineData: { data: fallbackBuffer.toString('base64'), mimeType: 'application/pdf' } }],
-          3, { responseMimeType: 'application/json', temperature: 0.0 }, log, 'header'
-        );
-        headerData = headerResponse.parsedData || {};
-      } catch (err) {
-        log.warn({ event: 'cipl_header_fallback_failed' }, 'Header fallback juga gagal');
+        log.warn({ event: 'cipl_header_failed', err: err.message });
       }
     }
   }
 
-  const masterJson = { invoice_list: [], pl_list: [] };
-
-  // ── Fase 2: Ekstraksi paralel ─────────────────────────────────────────────
+  // ── Fase 2: Parallel Extraction ──────────────────────────────────────────
+  const masterJson   = { invoice_list: [], pl_list: [] };
   const invPagesData = await processInvoicePages(invoicePages, 'invoice');
-  const plPagesData  = await processPlPages(plPages, allPlPages, 'pl');
+  const plPagesData  = await processPlPages(plPages, 'pl');
 
-  log.info('Fase 3: Merge & Normalize (v14.3)');
+  // ── Fase 3: Merge & Normalize ────────────────────────────────────────────
+  log.info('Fase 3: Merge & Normalize');
 
-  // ── TAHAP 4A — INVOICE MERGE ──────────────────────────────────────────────
-  const invoiceMap = new Map();
-
+  // ── Invoice merge ────────────────────────────────────────────────────────
+  // n8n: skip entry tanpa invoice_number — tidak ada redistribusi.
+  const globalInvoices = [];
   for (const page of invPagesData) {
-    for (const inv of (page.invoice_list || [])) {
-      const key = inv.invoice_number;
-      if (!key) continue;
+    const invoiceArray = page.invoice_list || page.invoices || [];
+    for (const inv of invoiceArray) {
+      if (!inv.invoice_number) {
+        log.warn(
+          { event: 'invoice_null_number_skipped' },
+          '[INVOICE] Entry dengan invoice_number null dilewati (sesuai n8n)'
+        );
+        continue;
+      }
+      const validItems = (inv.items || inv.rows || []).filter((item) => !isHeaderPollutionRow(item));
+      if (validItems.length === 0) continue;
 
-      if (!invoiceMap.has(key)) {
-        invoiceMap.set(key, {
-          invoice_number: key,
+      let targetInv = globalInvoices.find((i) => i.invoice_number === inv.invoice_number);
+      if (!targetInv) {
+        targetInv = {
+          invoice_number: inv.invoice_number,
           invoice_date:   inv.invoice_date || null,
-          items: [],
-          _ctx: { origin: null, origin_code: null, currency: null, vendor_name: null, vendor_number: null },
-        });
+          items:          [],
+        };
+        globalInvoices.push(targetInv);
       }
 
-      const existing = invoiceMap.get(key);
-      if (!existing.invoice_date && inv.invoice_date) existing.invoice_date = inv.invoice_date;
-
-      for (const item of (inv.items || [])) {
-        if (item.origin       && !existing._ctx.origin)        existing._ctx.origin        = item.origin;
-        if (item.origin_code  && !existing._ctx.origin_code)   existing._ctx.origin_code   = item.origin_code;
-        if (item.currency     && !existing._ctx.currency)      existing._ctx.currency      = item.currency;
-        if (item.vendor_name  && !existing._ctx.vendor_name)   existing._ctx.vendor_name   = item.vendor_name;
-        if (item.vendor_number && !existing._ctx.vendor_number) existing._ctx.vendor_number = item.vendor_number;
-      }
-
-      existing.items.push(...(inv.items || []));
+      validItems.forEach((item) => {
+        // parseFloat: preserve decimal sub-item numbers (e.g. "1.1")
+        const parsed = parseFloat(item.number);
+        item.number  = !isNaN(parsed) ? parsed : null;
+        targetInv.items.push(item);
+      });
     }
   }
 
-  masterJson.invoice_list = Array.from(invoiceMap.values()).map((inv) => {
-    const ctx = inv._ctx;
-    const propagated = inv.items.map((item) => ({
-      ...item,
-      origin:        item.origin        ?? ctx.origin,
-      origin_code:   item.origin_code   ?? ctx.origin_code,
-      currency:      item.currency      ?? ctx.currency,
-      vendor_name:   item.vendor_name   ?? ctx.vendor_name,
-      vendor_number: item.vendor_number ?? ctx.vendor_number,
-    }));
-
-    return {
-      invoice_number: inv.invoice_number,
-      invoice_date:   inv.invoice_date,
-      items: propagated.sort((a, b) => {
-        const numA = parseInt(a.number, 10);
-        const numB = parseInt(b.number, 10);
-        return (isNaN(numA) ? 0 : numA) - (isNaN(numB) ? 0 : numB);
-      }),
-    };
+  globalInvoices.forEach((inv) => {
+    inv.items = deduplicateInvoiceItems(inv.items);
+    inv.items.sort((a, b) => (a.number || 0) - (b.number || 0));
   });
+  masterJson.invoice_list = globalInvoices;
 
-  // ── TAHAP 4B — PL MERGE (MULTI-PL GROUPING + HARVESTER INHERITANCE + BUG-B FIX) ──
-  const PHYSICAL_FIELDS = [
-    'net_weight', 'gross_weight', 'measurement',
-    'packaging_qty', 'packaging_unit', 'packaging_type', 'brand', 'origin',
-  ];
+  // ── PL merge ─────────────────────────────────────────────────────────────
   const plMap = new Map();
-
-  // Variabel memori untuk menyelamatkan baris yang terpotong (Harvester)
-  let lastValidPlNumber = 'UNKNOWN_PL';
-  let lastValidPlDate = null;
-
   for (const page of plPagesData) {
-    for (const pl of (page.pl_list || [])) {
-      let plKey = pl.packing_list_number;
+    const plArray = page.pl_list || page.pls || [];
+    for (const pl of plArray) {
+      const plKey = pl.packing_list_number && pl.packing_list_number !== 'null'
+        ? pl.packing_list_number
+        : null;
 
-      // 1. Logika PL Number & Date Inheritance (JANGAN DIHAPUS!)
-      if (plKey) {
-        lastValidPlNumber = plKey;
-      } else {
-        plKey = lastValidPlNumber; // Inherit nomor PL sebelumnya jika baris saat ini null
+      if (!plKey) {
+        log.warn(
+          { event: 'pl_null_number_skipped', items: (pl.items || []).length, pl_date: pl.packing_list_date },
+          '[PL] Entri dengan packing_list_number null dilewati — data hilang'
+        );
+        continue;
       }
 
-      if (pl.packing_list_date) {
-        lastValidPlDate = pl.packing_list_date;
+      const validItems = (pl.items || pl.rows || []).filter((item) => !isHeaderPollutionRow(item));
+      if (validItems.length === 0) continue;
+
+      let finalInvNum = [];
+      if (Array.isArray(pl.invoice_number)) {
+        finalInvNum = pl.invoice_number.filter((i) => i && i !== 'null');
+      } else if (typeof pl.invoice_number === 'string' && pl.invoice_number !== 'null') {
+        finalInvNum = [pl.invoice_number];
       }
+
+      validItems.forEach((item) => {
+        const parsed = parseFloat(item.number);
+        item.number  = !isNaN(parsed) ? parsed : null;
+      });
 
       if (!plMap.has(plKey)) {
         plMap.set(plKey, {
-          packing_list_number: plKey === 'UNKNOWN_PL' ? null : plKey,
-          packing_list_date: pl.packing_list_date || lastValidPlDate || null,
-          invoice_number: [...(pl.invoice_number || [])],
-          packageMap: new Map(),
+          packing_list_number: plKey,
+          packing_list_date:   pl.packing_list_date && pl.packing_list_date !== 'null'
+            ? pl.packing_list_date
+            : null,
+          invoice_number: new Set(finalInvNum),
+          items:          [...validItems],
         });
-      }
-
-      const plEntry = plMap.get(plKey);
-      if (!plEntry.packing_list_date && pl.packing_list_date) {
-        plEntry.packing_list_date = pl.packing_list_date;
-      }
-      if (pl.invoice_number?.length) {
-        plEntry.invoice_number = [...new Set([...plEntry.invoice_number, ...pl.invoice_number])];
-      }
-
-      for (const item of (pl.items || [])) {
-        // ── FIX BUG-B: filter header pollution row (Inovasi Claude) ────────
-        if (isHeaderPollutionRow(item)) {
-          log.debug(`[CIPL] Header pollution row dibuang: PL=${plKey} prod="${item.prod_number}"`);
-          continue;
-        }
-
-        const pkgKey = item.package_number;
-        if (!isValidPackageNumber(pkgKey)) continue;
-
-        const pkgMap = plEntry.packageMap;
-        if (!pkgMap.has(pkgKey)) {
-          pkgMap.set(pkgKey, {
-            package_number: pkgKey,
-            net_weight: null, gross_weight: null, measurement: null,
-            packaging_qty: null, packaging_unit: null, packaging_type: null,
-            brand: null, origin: null,
-            items: [],
-          });
-        }
-
-        const pkg = pkgMap.get(pkgKey);
-        for (const field of PHYSICAL_FIELDS) {
-          if (pkg[field] === null && item[field] != null) pkg[field] = item[field];
-        }
-
-        if (item.prod_number) {
-          const isDuplicate = pkg.items.some((i) => i.prod_number === item.prod_number);
-          if (!isDuplicate) {
-            pkg.items.push({
-              item_number:   item.number        || null,
-              prod_number:   item.prod_number,
-              description:   item.description   || null,
-              quantity:      item.quantity      || null,
-              quantity_unit: item.quantity_unit || null,
-              brand:         item.brand         || null,
-              origin:        item.origin        || null,
-            });
-          }
+      } else {
+        const entry = plMap.get(plKey);
+        finalInvNum.forEach((inv) => entry.invoice_number.add(inv));
+        entry.items.push(...validItems);
+        if (!entry.packing_list_date && pl.packing_list_date && pl.packing_list_date !== 'null') {
+          entry.packing_list_date = pl.packing_list_date;
         }
       }
     }
   }
 
-  // ── TAHAP 5 — FINAL FLATTEN & NORMALIZE ──────────────────────────────────
-  const prodDescriptionMap = new Map();
-  for (const inv of masterJson.invoice_list) {
-    for (const item of inv.items) {
-      if (item.prod_number && item.description && !prodDescriptionMap.has(item.prod_number)) {
-        prodDescriptionMap.set(item.prod_number, item.description);
-      }
-    }
-  }
+  // Dedup per PL menggunakan n8n Strategy B
+  const globalPls = Array.from(plMap.values()).map((entry) => ({
+    packing_list_number: entry.packing_list_number,
+    packing_list_date:   entry.packing_list_date,
+    invoice_number:      Array.from(entry.invoice_number),
+    items:               deduplicatePlItems(entry.packing_list_number, entry.items),
+  }));
+  masterJson.pl_list = globalPls;
 
-  const finalPlList = [];
-  for (const pl of Array.from(plMap.values())) {
-    const flatItems = [];
-    const packages = Array.from(pl.packageMap.values());
-
-    for (const pkg of packages) {
-      for (const item of (pkg.items || [])) {
-        const description = item.description
-          || prodDescriptionMap.get(item.prod_number)
-          || null;
-
-        flatItems.push({
-          number:         item.item_number ?? item.number ?? null,
-          package_number: pkg.package_number,
-          prod_number:    item.prod_number  ?? null,
-          description,
-          quantity:       item.quantity,
-          quantity_unit:  item.quantity_unit,
-          net_weight:     normalizeWeight(pkg.net_weight),             // FIX BUG-C
-          gross_weight:   normalizeWeight(pkg.gross_weight),           // FIX BUG-C
-          measurement:    pkg.measurement   ?? null,
-          packaging_qty:  pkg.packaging_qty,
-          packaging_unit: normalizePackagingUnit(pkg.packaging_type, pkg.packaging_unit), // FIX BUG-D
-          packaging_type: pkg.packaging_type,
-          brand:  item.brand  ?? pkg.brand  ?? null,
-          origin: item.origin ?? pkg.origin ?? null,
-        });
-      }
-    }
-
-    if (flatItems.length === 0) {
-      log.warn(`[CIPL] PL ${pl.packing_list_number} dibuang karena items kosong.`);
-      continue;
-    }
-
-    finalPlList.push({
-      packing_list_number: pl.packing_list_number,
-      packing_list_date:   pl.packing_list_date,
-      invoice_number:      pl.invoice_number,
-      items:               flatItems,
-    });
-  }
-  masterJson.pl_list = finalPlList;
-
-  // ── FIX BUG-E: Hitung total via integer cents ─────────────────────────────
-  masterJson.total = calculateTotal(masterJson.invoice_list);
-
-  // ── Coerce number → integer (safety net) ─────────────────────────────────
-  for (const invoice of masterJson.invoice_list) {
-    for (const item of invoice.items) {
-      if (item.number !== null && item.number !== undefined) {
-        item.number = parseInt(item.number, 10);
-        if (isNaN(item.number)) item.number = null;
-      }
-    }
-  }
+  // ── Packages flatten (fallback format) ───────────────────────────────────
   for (const pl of masterJson.pl_list) {
-    for (const item of pl.items) {
-      if (item.number !== null && item.number !== undefined) {
-        item.number = parseInt(item.number, 10);
-        if (isNaN(item.number)) item.number = null;
+    if (!Array.isArray(pl.packages)) continue;
+    const flatItems = [];
+    for (const pkg of pl.packages) {
+      const pkgPhysical = {
+        gross_weight: pkg.gross_weight ?? null,
+        net_weight:   pkg.net_weight   ?? null,
+        measurement:  pkg.measurement  ?? null,
+      };
+      for (const item of (pkg.items || [])) {
+        flatItems.push({ package_number: pkg.package_number, ...item, ...pkgPhysical });
       }
     }
+    pl.items = flatItems;
+    delete pl.packages;
   }
 
-  // ── Cross-ref invoice_number di PL yang kosong ────────────────────────────
+  // ── Fill invoice_number di PL via prod_number lookup ─────────────────────
+  // Sesuai n8n node "Code in JavaScript4"
   const prodToInvoices = new Map();
   for (const invoice of masterJson.invoice_list) {
-    for (const item of invoice.items) {
+    for (const item of (invoice.items || [])) {
       if (!item.prod_number) continue;
       if (!prodToInvoices.has(item.prod_number)) prodToInvoices.set(item.prod_number, new Set());
-      prodToInvoices.get(item.prod_number).add(invoice.invoice_number);
+      if (invoice.invoice_number) prodToInvoices.get(item.prod_number).add(invoice.invoice_number);
     }
   }
   for (const pl of masterJson.pl_list) {
     if (pl.invoice_number && pl.invoice_number.length > 0) continue;
-    const foundInvoices = new Set();
-    for (const item of pl.items) {
+    const matched = new Set();
+    for (const item of (pl.items || [])) {
       if (!item.prod_number) continue;
-      const matched = prodToInvoices.get(item.prod_number);
-      if (matched) for (const invNum of matched) foundInvoices.add(invNum);
+      const invs = prodToInvoices.get(item.prod_number);
+      if (invs) invs.forEach((inv) => matched.add(inv));
     }
-    pl.invoice_number = Array.from(foundInvoices);
+    if (matched.size > 0) {
+      pl.invoice_number = Array.from(matched);
+      log.info(
+        { event: 'pl_invoice_filled', pl: pl.packing_list_number, filled: pl.invoice_number },
+        'invoice_number diisi via prod_number lookup'
+      );
+    }
   }
 
-  // ── FIX BUG-F: Gabungkan header + resolve origin ──────────────────────────
-  const resolvedOrigin = resolveRootOrigin(headerData, masterJson.invoice_list);
+  // ── Final Assembly ───────────────────────────────────────────────────────
+  // n8n: hitung total hanya jika header tidak menyediakan nilai (header.total ?? calculated)
+  const calculatedTotal = calculateTotal(masterJson.invoice_list);
+  const resolvedOrigin  = resolveRootOrigin(headerData, masterJson.invoice_list);
+
   const output = {
     ...headerData,
-    origin:       resolvedOrigin,           // FIX BUG-F: override null
-    total:        masterJson.total,          // FIX BUG-E: no float leak
+    origin:       resolvedOrigin,
+    total:        headerData.total ?? calculatedTotal, // preserve stated total dari dokumen
     invoice_list: masterJson.invoice_list,
     pl_list:      masterJson.pl_list,
   };
 
-  await debugLog(docCode, 'cipl_final_output', output);
   log.info({
-    event:         'cipl_extraction_completed',
-    invoice_count: masterJson.invoice_list.length,
-    pl_count:      masterJson.pl_list.length,
-    total:         masterJson.total,
-  }, `CIPL Pipeline v14.3 Selesai — ${masterJson.invoice_list.length} invoice, ${masterJson.pl_list.length} PL, total: ${masterJson.total}`);
+    event:                  'cipl_extraction_completed',
+    invoice_count:          masterJson.invoice_list.length,
+    pl_count:               masterJson.pl_list.length,
+    total:                  output.total,
+    summary_pages_excluded: summaryPages.size,
+    debug_dir:              _pageDebugDir || 'disabled',
+  }, 'CIPL Pipeline v15.0 Selesai');
+
+  await debugLog(docCode, 'cipl_final_output', output);
   return output;
 };

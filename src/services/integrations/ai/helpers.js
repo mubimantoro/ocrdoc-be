@@ -134,11 +134,7 @@ export const mergeArraysDeep = (master, batch) => {
   });
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// FIX B2 (lanjutan dari sanitizer): callGeminiWithRetry menerima domain,
-// dan meneruskannya ke cleanAIJson dengan urutan parameter yang benar:
-//   cleanAIJson(text, domain, log)  ← sesuai signature baru di ai-sanitizer.js
-// ════════════════════════════════════════════════════════════════════════════
+
 export const callGeminiWithRetry = async (
   geminiContents,
   maxRetries = 3,
@@ -204,34 +200,18 @@ export const applyForwardFill = (data) => {
   recursiveFill(data);
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// parseItemsCsv — FIX B2 (domain param) + FIX B3 (expandRows) +
-//                 FIX HARVESTER (handler untuk _is_harvested)
-//
-// HARVESTER BUG (akar masalah invoice_list/pl_list selalu []):
-//   Ketika cleanAIJson gagal parse normal dan Harvester mengambil alih,
-//   ia return: { _is_harvested: true, harvested_rows: [...], domain }
-//   Tapi parseItemsCsv tidak punya handler untuk struktur ini →
-//   data masuk ke merge phase tanpa item_headers dan tanpa invoices/pl_list
-//   → invoiceMap dan plMap tetap kosong → output [].
-//
-// FIX: Tambah blok rekonstruksi di awal parseItemsCsv untuk docCode='001':
-//   Jika data._is_harvested === true, wrap harvested_rows ke dalam struktur
-//   { item_headers, invoices/pl_list } yang diharapkan oleh kode di bawahnya.
-// ════════════════════════════════════════════════════════════════════════════
+
 export const parseItemsCsv = (data, docCode, domain = null) => {
   if (!data) return;
 
-  // ── FIX HARVESTER: Rekonstruksi data dari hasil Harvester ────────────────
-  // Harvester menghasilkan { _is_harvested: true, harvested_rows, domain }
-  // Struktur ini tidak dikenali oleh parser di bawah → harus di-unwrap dulu
+  // ─── Harvested fallback path ─────────────────────────────────────────────
+  // Dipanggil ketika Gemini tidak mengikuti compact format (tidak ada item_headers/rows).
+  // Gunakan fixed key '__HARVESTED_PL__' agar entry dari batch berbeda dapat di-merge
+  // di pdf-cipl.js. Sebelumnya menggunakan Date.now() sehingga setiap batch
+  // menghasilkan key unik → entri terpisah meskipun berasal dari PL yang sama.
   if (data._is_harvested && Array.isArray(data.harvested_rows) && docCode === '001') {
     const effectiveDomain = data.domain || domain;
 
-    // Kita tidak punya item_headers dari Harvester (JSON terpotong sebelum headers selesai).
-    // Gunakan header canonical sesuai domain sebagai fallback.
-    // Ini adalah best-effort recovery — field yang ter-harvest mungkin tidak
-    // sempurna, tapi lebih baik dari array kosong.
     const INVOICE_HEADERS = [
       'number', 'prod_number', 'description', 'quantity', 'uom',
       'unit_price', 'amount', 'currency', 'origin', 'origin_code',
@@ -245,29 +225,23 @@ export const parseItemsCsv = (data, docCode, domain = null) => {
 
     const headers = effectiveDomain === 'pl' ? PL_HEADERS : INVOICE_HEADERS;
 
-    // Wrap rows ke dalam struktur yang diharapkan:
-    // invoice → data.invoices = [{ invoice_number: null, rows: [...] }]
-    // pl      → data.pl_list  = [{ packing_list_number: null, rows: [...] }]
     if (effectiveDomain === 'pl') {
       data.pl_list = [{
-        packing_list_number: null,  // tidak bisa diketahui dari harvested rows
+        packing_list_number: '__HARVESTED_PL__', // fixed key — dapat di-merge antar batch
         packing_list_date:   null,
         invoice_number:      [],
-        rows: data.harvested_rows,
+        rows:                data.harvested_rows,
       }];
     } else {
-      // invoice atau domain tidak diketahui → assume invoice
       data.invoices = [{
-        invoice_number: null,
+        invoice_number: null, // null → akan di-skip di pdf-cipl.js (sesuai n8n)
         invoice_date:   null,
-        rows: data.harvested_rows,
+        rows:           data.harvested_rows,
       }];
     }
 
-    // Ganti item_headers dengan canonical headers
     data.item_headers = headers;
 
-    // Hapus key Harvester agar tidak mengacaukan parser di bawah
     delete data._is_harvested;
     delete data.harvested_rows;
     delete data.domain;
@@ -304,9 +278,6 @@ export const parseItemsCsv = (data, docCode, domain = null) => {
     return v;
   };
 
-  // ── FIX B3: expandRows yang benar menggunakan reduce ────────────────────
-  // Bug asli: headers.forEach() di dalam rows.map() — forEach tidak return value
-  // → setiap row di-map ke undefined → obj selalu {}
   const expandRows = (rows, headers) => {
     if (!Array.isArray(rows) || !Array.isArray(headers)) return [];
 
@@ -348,6 +319,7 @@ export const parseItemsCsv = (data, docCode, domain = null) => {
 
   // ════════════════════════════════════════════════════════════════════════════
   // CIPL COMPACT FORMAT PARSER (docCode === '001')
+  // Mengkonversi rows (array-of-arrays) → items (array-of-objects)
   // ════════════════════════════════════════════════════════════════════════════
   if (docCode === '001') {
     const headers = data.item_headers;
